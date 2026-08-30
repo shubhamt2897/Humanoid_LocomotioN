@@ -1,0 +1,27 @@
+# Training outputs -- large, per-run, regenerated, and shouldn't live in git history
+logs/
+wandb/
+models/*.onnx
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+
+# Machine-local IDE/tooling state -- absolute paths specific to this machine's conda install
+.vscode/
+.claude/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+PROGRESS.md
+Project Specification.md
+.claude/
+.vscode/
+models/
+MUJOCO_LOG.TXT

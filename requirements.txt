@@ -1,0 +1,14 @@
+# Pinned to what was verified working locally (conda env "humanoid_locomotion", Python 3.10).
+#
+# IMPORTANT for Colab / any CUDA machine: do NOT let pip touch torch there. Colab ships a
+# CUDA-matched torch preinstalled; reinstalling/pinning it here can silently replace it with a
+# CPU-only build (this happened to us locally -- rsl-rl-lib's "torch>=2.6.0" dependency pulled a
+# CPU wheel over a carefully-installed CUDA one). On Colab, install everything below EXCEPT torch,
+# then verify `torch.cuda.is_available()` is True before training.
+torch==2.13.0
+mujoco==3.12.0
+rsl-rl-lib==5.5.0
+tensordict==0.14.0
+wandb==0.29.0
+numpy==2.2.6
+onnx==1.22.0
