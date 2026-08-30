@@ -10,6 +10,8 @@ contract, not implemented here.
 
 from __future__ import annotations
 
+import time
+
 import numpy as np
 import mujoco
 
@@ -34,10 +36,22 @@ class G1MultiEnv:
         self.num_envs = cfg.num_envs
         self.rng = np.random.default_rng()
 
-        self.models = [mujoco.MjModel.from_xml_path(cfg.scene_xml) for _ in range(cfg.num_envs)]
+        # Compiling each env's MjModel from XML is the slow part (~0.1-0.3s each) -- at num_envs
+        # in the hundreds/thousands this can take minutes with zero output otherwise, which looks
+        # indistinguishable from a hang. Print progress so it's visibly still working.
+        print(f"Compiling {cfg.num_envs} MjModel instance(s) from {cfg.scene_xml} ...")
+        compile_start = time.time()
+        self.models = []
+        report_every = max(1, cfg.num_envs // 10)
+        for i in range(cfg.num_envs):
+            self.models.append(mujoco.MjModel.from_xml_path(cfg.scene_xml))
+            if (i + 1) % report_every == 0 or (i + 1) == cfg.num_envs:
+                elapsed = time.time() - compile_start
+                print(f"  {i + 1}/{cfg.num_envs} compiled ({elapsed:.1f}s elapsed)")
         for m in self.models:
             m.opt.timestep = cfg.sim_dt
         self.datas = [mujoco.MjData(m) for m in self.models]
+        print(f"Done: {cfg.num_envs} envs ready in {time.time() - compile_start:.1f}s")
 
         base = self.models[0]
         self.actuator_ids = np.array(
