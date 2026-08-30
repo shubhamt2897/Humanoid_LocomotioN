@@ -26,6 +26,7 @@ import argparse
 import datetime
 import os
 import sys
+import threading
 import time
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -106,12 +107,17 @@ class VideoRecorder:
     Uses a body-tracking camera (follows the pelvis) rather than mujoco.Renderer's static
     default -- otherwise a robot that walks away from the origin (or a velocity arrow pointing
     away from a fixed viewing angle) drifts out of frame over a longer clip.
+
+    The R-key toggle fires on the viewer's own render thread while capture_frame() runs on the
+    main loop thread; a lock around every read/write of self.writer prevents the two racing (the
+    race previously surfaced as a stray "I/O operation on closed Writer" crash).
     """
 
     def __init__(self, model, video_dir: str, tag: str, fps: float, track_body_id: int):
         import imageio
 
         self._imageio = imageio
+        self._lock = threading.Lock()
         self.renderer = mujoco.Renderer(model, height=480, width=640)
         self.camera = mujoco.MjvCamera()
         self.camera.type = mujoco.mjtCamera.mjCAMERA_TRACKING
@@ -129,26 +135,31 @@ class VideoRecorder:
         return self.writer is not None
 
     def toggle(self, data) -> None:
-        if self.is_recording:
-            self.stop()
-        else:
-            self.start(data)
+        with self._lock:
+            if self.writer is not None:
+                self._stop_locked()
+            else:
+                self._start_locked(data)
 
-    def start(self, data) -> None:
+    def _start_locked(self, data) -> None:
         os.makedirs(self.video_dir, exist_ok=True)
         stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         path = os.path.join(self.video_dir, f"{self.tag}_{stamp}.mp4")
         self.writer = self._imageio.get_writer(path, fps=self.fps, macro_block_size=None)
         print(f"[record] started -> {path}")
 
-    def stop(self) -> None:
+    def _stop_locked(self) -> None:
         self.writer.close()
         print("[record] stopped")
         self.writer = None
 
     def capture_frame(self, data, arrow_vecs: tuple | None = None) -> None:
-        if not self.is_recording:
-            return
+        with self._lock:
+            if self.writer is None:
+                return
+            self._render_and_write_locked(data, arrow_vecs)
+
+    def _render_and_write_locked(self, data, arrow_vecs: tuple | None) -> None:
         self.renderer.update_scene(data, camera=self.camera)
         if arrow_vecs is not None:
             origin, target_vec, actual_vec = arrow_vecs
@@ -156,8 +167,9 @@ class VideoRecorder:
         self.writer.append_data(self.renderer.render())
 
     def close(self) -> None:
-        if self.is_recording:
-            self.stop()
+        with self._lock:
+            if self.writer is not None:
+                self._stop_locked()
         self.renderer.close()
 
 
@@ -192,7 +204,10 @@ def main() -> None:
     train_cfg = build_train_cfg()
     runner = OnPolicyRunner(env, train_cfg, log_dir=None, device="cpu")
     if args.checkpoint:
-        runner.load(args.checkpoint)
+        # map_location: rsl_rl's runner.load() leaves torch.load's device mapping at its default
+        # (whatever the checkpoint was saved on), so a GPU-trained checkpoint (e.g. from Colab)
+        # fails to deserialize on this CPU-only viewer without this override.
+        runner.load(args.checkpoint, map_location="cpu")
     policy = runner.get_inference_policy(device="cpu")
 
     obs = env.get_observations()
