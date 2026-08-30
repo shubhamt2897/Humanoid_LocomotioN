@@ -44,8 +44,26 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _patch_wandb_settings_compat() -> None:
+    """rsl_rl (as of 5.5.0) still constructs wandb.Settings(start_method="thread"), a kwarg modern
+    wandb (0.17+, pydantic-based Settings) rejects outright with a ValidationError. Strip it before
+    it reaches wandb's strict validator -- rsl_rl's own package, not something we can configure away."""
+    import wandb
+
+    original_init = wandb.Settings.__init__
+
+    def patched_init(self, **kwargs):
+        kwargs.pop("start_method", None)
+        original_init(self, **kwargs)
+
+    wandb.Settings.__init__ = patched_init
+
+
 def main() -> None:
     args = parse_args()
+
+    if args.wandb:
+        _patch_wandb_settings_compat()
 
     env_cfg = EnvCfg(
         scene_xml=os.path.join(PROJECT_ROOT, "assets", "g1", "scene_train.xml"),
