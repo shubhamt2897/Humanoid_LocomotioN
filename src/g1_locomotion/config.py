@@ -29,6 +29,13 @@ class RewardScales:
     torque_penalty: float = -1.0e-5
     action_rate_penalty: float = -0.01
     alive_bonus: float = 0.1
+    # Stability terms below match Unitree's official G1 RL config (see rewards.py for the
+    # per-term explanation of what each one physically means for the robot):
+    # https://github.com/unitreerobotics/unitree_rl_gym/blob/main/legged_gym/envs/g1/g1_config.py
+    orientation: float = -1.0
+    base_height: float = -10.0
+    lin_vel_z: float = -2.0
+    ang_vel_xy: float = -0.05
 
 
 @dataclass

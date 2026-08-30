@@ -1,7 +1,9 @@
 """Static description of the Unitree G1 (29-DOF) actuated joints and default pose.
 
-Values here (PD gains, action scale) are reasonable starting points typical for this
-robot class, not manufacturer-calibrated constants -- tune them once training is running.
+Leg PD gains (hip/knee/ankle) match Unitree's own official RL config for this robot:
+https://github.com/unitreerobotics/unitree_rl_gym/blob/main/legged_gym/envs/g1/g1_config.py
+That reference only actuates the 12 leg joints; waist/arm/wrist gains here have no official
+counterpart and remain reasonable-starting-point estimates -- tune them once training is running.
 """
 
 from __future__ import annotations
@@ -47,9 +49,11 @@ ACTUATOR_NAMES: tuple[str, ...] = tuple(name.removesuffix("_joint") for name in 
 
 # Per-joint-group (kp, kd, action_scale). "action_scale" bounds how far a unit action
 # can move the PD target off the default pose, in radians.
-_LEG_GAINS = (100.0, 2.5, 0.25)
+# Hip/knee/ankle kp+kd are Unitree's official values (see module docstring); action_scale
+# there is a uniform 0.25 across all 12 leg joints in that reference, matched here too.
+_LEG_GAINS = (100.0, 2.0, 0.25)
 _KNEE_GAINS = (150.0, 4.0, 0.25)
-_ANKLE_GAINS = (40.0, 1.0, 0.20)
+_ANKLE_GAINS = (40.0, 2.0, 0.25)
 _WAIST_GAINS = (150.0, 3.0, 0.15)
 _ARM_GAINS = (40.0, 1.0, 0.30)
 _WRIST_GAINS = (15.0, 0.3, 0.30)
