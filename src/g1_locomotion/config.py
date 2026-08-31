@@ -28,7 +28,13 @@ class RewardScales:
     zmp_margin: float = -0.2
     torque_penalty: float = -1.0e-5
     action_rate_penalty: float = -0.01
-    alive_bonus: float = 0.1
+    # asymmetric_payload_run_v2 (5000 iters) plateaued at ~64/1000 step episodes (6.4% of max)
+    # and never improved past iteration ~1000 -- alive_bonus was too small relative to the
+    # penalty terms below (0.1 vs. base_height's -10.0) to give PPO much incentive to fight for
+    # extra survival time. A comparable open-source G1/PPO/rsl_rl-style policy that *did* learn
+    # stable standing (836/1000 step episodes) used alive_bonus=5.0:
+    # https://huggingface.co/hardware-pathon-ai/unitree-g1-phase1-locomotion
+    alive_bonus: float = 5.0
     # Stability terms below match Unitree's official G1 RL config (see rewards.py for the
     # per-term explanation of what each one physically means for the robot):
     # https://github.com/unitreerobotics/unitree_rl_gym/blob/main/legged_gym/envs/g1/g1_config.py

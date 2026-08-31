@@ -150,6 +150,39 @@ means every env carries its own full copy of the robot's mesh geometry, which in
 free-tier Colab (~12-13GB RAM) at roughly 64-128 envs today, well short of the spec's `num_envs
 = 1024` target -- that scale needs the GPU-batched backend above, not just more patience.
 
+**Phase 2 (alt) -- Hugging Face Jobs (GPU):** no Colab session needed; runs on HF's cloud from a
+plain terminal via the `hf` CLI (`hf auth login` once beforehand). Checkpoints go to an HF
+[storage bucket](https://huggingface.co/docs/hub/storage-buckets) instead of Drive, so a job
+timing out doesn't lose progress either. Replace `<hf-username>`, `<bucket-name>`, and
+`<wandb-api-key>` below with your own:
+```
+hf buckets create <hf-username>/<bucket-name> --exist-ok   # one-time, free at this checkpoint scale
+
+export WANDB_API_KEY='<wandb-api-key>'
+hf jobs run --flavor t4-small --timeout 6h -d \
+  --secrets WANDB_API_KEY=$WANDB_API_KEY \
+  -v hf://buckets/<hf-username>/<bucket-name>:/checkpoints \
+  pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime \
+  bash -c "apt-get update -qq && apt-get install -y -qq git > /dev/null && \
+    git clone https://github.com/shubhamt2897/Humanoid_LocomotioN.git /repo && cd /repo && \
+    pip install -q mujoco==3.12.0 rsl-rl-lib==5.5.0 tensordict==0.14.0 wandb==0.29.0 onnx==1.22.0 imageio==2.37.4 imageio-ffmpeg==0.6.0 && \
+    python train.py --num_envs 64 --device cuda --iterations 5000 --save_interval 250 \
+      --wandb --run_name asymmetric_payload_run_v2 --log_dir /checkpoints/asymmetric_payload_run_v2"
+```
+Notes learned the hard way:
+- The `pytorch/pytorch:*-runtime` image has no `git` -- install it first or the clone silently
+  fails with exit code 127.
+- `--secrets WANDB_API_KEY` (no `=value`) does **not** forward your local env var -- that
+  bare-name shorthand is special-cased for `HF_TOKEN` only. Any other secret needs the explicit
+  `NAME=value` form shown above.
+- `-d` (detached) avoids streaming logs back to the terminal at all -- on Windows consoles this
+  sidesteps a `charmap` codec crash from Unicode characters in wandb's output (the job itself
+  keeps running server-side regardless; only the local log stream would die). Poll status with
+  `hf jobs inspect <job_id>` and logs with `hf jobs logs <job_id>` instead of `-f` streaming.
+- Same CPU-bound-stepping caveat as Phase 2/Colab above applies -- pick `t4-small` over
+  `t4-medium`/`a10g-*` unless you've actually parallelized `mujoco_env.py`'s env-stepping loop
+  across cores; the extra vCPUs otherwise sit idle.
+
 **Export for deployment:**
 ```
 python export_policy.py \
@@ -157,7 +190,16 @@ python export_policy.py \
   --out models/g1_policy.onnx
 ```
 (same 0-indexing applies -- check the checkpoint directory for the actual highest `model_<N>.pt`
-rather than assuming it matches `--iterations` exactly.)
+rather than assuming it matches `--iterations` exactly. For an HF Jobs run, download the
+checkpoint first -- see "Accessing bucket checkpoints" below -- then point `--checkpoint` at the
+local copy.)
+
+**Accessing bucket checkpoints (HF Jobs runs):**
+- Browser: `https://huggingface.co/buckets/<hf-username>/<bucket-name>` -- browse, preview, and
+  download files directly from the bucket's page on the Hub.
+- CLI, list what's there: `hf buckets ls <hf-username>/<bucket-name>/asymmetric_payload_run_v2`
+- CLI, download one checkpoint: `hf buckets cp hf://buckets/<hf-username>/<bucket-name>/asymmetric_payload_run_v2/model_<N>.pt ./model_<N>.pt`
+- CLI, download the whole run folder: `hf buckets sync hf://buckets/<hf-username>/<bucket-name>/asymmetric_payload_run_v2 ./checkpoints/asymmetric_payload_run_v2`
 
 ## Design notes / approximations
 
