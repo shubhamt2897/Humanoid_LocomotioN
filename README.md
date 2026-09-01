@@ -41,15 +41,15 @@ idea, which get scaled and summed into a single number PPO optimizes. All of the
 | `lin_vel_tracking` | +1.5 | Walking at the commanded speed, in the commanded direction. This is the actual goal -- everything else exists to make it achievable without falling over. |
 | `ang_vel_tracking` | +0.75 | Turning at the commanded rate. |
 | `contact_timing` | +0.3 | Rewards a foot touching down after a proper swing phase (~0.2-0.5s in the air), not an instant tap -- encourages a real walking gait over shuffling. |
-| `double_flight` | (shares `contact_timing`'s weight, negated) | Penalizes both feet being off the ground at once -- no hopping/jumping in place of walking. |
-| `zmp_margin` | -0.2 | Soft penalty as the center of pressure drifts toward the edge of the foot/feet currently in contact -- a cheap approximation of "don't overbalance your stance." |
+| `double_flight` | -0.3 | Penalizes both feet being off the ground at once -- no hopping/jumping in place of walking. Has its own dedicated scale (previously reused `contact_timing`'s weight -- a bug, fixed for `asymmetric_payload_run_v4`, since that coupled two unrelated behaviors under one tuning knob). |
+| `zmp_margin` | -0.2 | Soft penalty as the center of pressure drifts toward the edge of the foot/feet currently in contact -- a cheap approximation of "don't overbalance your stance." Grounded violations are clipped to the same `[0, 1]` range as the airborne case (fixed for `v4`) so a badly-balanced-but-grounded stance can never score worse than losing ground contact entirely. |
 | `torque_penalty` | -1e-5 | Penalizes `Σ torque²` across all 29 joints -- energy efficiency, and keeps the policy from relying on violent, hardware-damaging corrections. |
 | `action_rate_penalty` | -0.01 | Penalizes jerky, fast-changing actions frame to frame -- favors smooth control. |
 | `orientation` | -1.0 | **Penalizes torso tilt, continuously, every single step.** Computed from `projected_gravity` (which way "down" appears in the robot's own body frame -- (0,0,-1) exactly means perfectly upright). This is the one that actually teaches "leaning = bad" while there's still time to correct, rather than only finding out once it's already fallen past the point of no return. |
 | `base_height` | -10.0 | Penalizes the pelvis straying from its normal standing height -- keeps posture close to "standing normally" instead of gaming other rewards by crouching or launching upward. |
 | `lin_vel_z` | -2.0 | Penalizes vertical bounce/bob in the pelvis. A good gait keeps torso height roughly steady. |
 | `ang_vel_xy` | -0.05 | Penalizes roll/pitch *rotation rate* -- catches the robot actively tipping over as it's happening, complementing `orientation`'s "already tilted" check. |
-| `alive_bonus` | +0.1 | A flat reward every step the episode hasn't ended. |
+| `alive_bonus` | +5.0 | A flat reward every step the episode hasn't ended. Raised from an original `0.1`: at that scale it was too small relative to the stability penalties below to give PPO much incentive to fight for extra survival time (`asymmetric_payload_run_v2` plateaued at ~6% of the max episode length and never improved past iteration ~1000). `5.0` matches what a comparable open-source G1/PPO/`rsl_rl` policy used to learn stable standing: https://huggingface.co/hardware-pathon-ai/unitree-g1-phase1-locomotion. Caution: at this scale it now dominates the per-step reward total (see "PPO training-stability fixes" below) -- something to watch, not necessarily something already wrong. |
 
 **Why the last four exist:** early versions of this reward function had no continuous "stay
 upright" signal at all -- only the flat `alive_bonus` (which doesn't care *how* upright the robot
@@ -61,6 +61,32 @@ under-trained policy can find it "cheaper" to just go limp and fall quickly. `or
 `base_height`, `lin_vel_z`, and `ang_vel_xy` close that gap, matching Unitree's own official G1 RL
 config and ETH Zurich's `legged_gym` convention that this project's reward style otherwise follows:
 https://github.com/unitreerobotics/unitree_rl_gym/blob/main/legged_gym/envs/g1/g1_config.py
+
+## PPO training-stability fixes (`ppo_cfg.py`)
+
+`asymmetric_payload_run_v3` (5000 iterations, `alive_bonus=5.0`) trained without collapsing, but
+two of its training-diagnostic curves never converged: `Policy/mean_std` (the actor's action
+standard deviation) and `Loss/entropy` climbed **monotonically for the entire run** (std:
+1.08 -> 2.31), and `Loss/learning_rate` oscillated erratically between its clamps (`1e-5` and
+`1e-2`) instead of settling. Root cause, found by reading into the `rsl_rl` library's actual
+source rather than just the metrics: `distribution_cfg` never set an explicit `std_range`, so
+`GaussianDistribution`'s default `(1e-6, 1e6)` applied -- effectively no ceiling. Meanwhile
+`rl_env.py` clips sampled actions to `[-1, 1]` for the simulator, but that clipping happens
+*after* sampling, so `log_prob`/entropy (and the KL divergence driving the adaptive learning-rate
+rule) never see it -- inflating `std` cost the policy almost nothing while `entropy_coef` kept
+rewarding it, and the resulting noisy KL estimates fed the erratic learning-rate swings.
+
+Fix applied in `asymmetric_payload_run_v4`: `distribution_cfg` now sets an explicit `std_range`.
+First attempt (`[0.1, 1.0]`, matching `init_std`) stopped the runaway, but exposed a second, more
+precise mechanism: `init_std` sat *exactly* at the new ceiling, and `torch.clamp()` has zero
+gradient outside its bounds -- so the first optimizer step that nudged the raw parameter above
+`1.0` froze it there for the rest of training (`Policy/mean_std` was bit-for-bit `1.0000` for
+900+ consecutive iterations). `asymmetric_payload_run_v5` widened the range to `[0.1, 1.5]` so
+`init_std` has genuine room on both sides -- confirmed via a 1000-iteration smoke test that `std`
+now moves smoothly instead of freezing, though it's still climbing (not yet plateaued) at that
+point; whether `[0.1, 1.5]` alone prevents the later-run pathology, or `entropy_coef` (currently
+`0.01`) also needs lowering, is still an open question -- see `PROGRESS.md` for the full
+run-by-run diagnostic history.
 
 Termination itself is separate from all of the above: an episode ends early if the pelvis drops
 below 0.5m or `projected_gravity`'s vertical component exceeds 0.6 (i.e. the robot has actually
@@ -132,6 +158,10 @@ python play.py --checkpoint logs/smoke_test/model_19.pt   # visual check via muj
 ```
 (`rsl_rl`'s training loop is 0-indexed, so a 20-iteration run's last checkpoint is `model_19.pt`,
 not `model_20.pt` -- check `logs/smoke_test/` for whichever `model_<N>.pt` is actually highest.)
+
+No display attached (e.g. checking a checkpoint pulled from a cloud run)? `play.py --headless
+--checkpoint <path>` skips the interactive viewer, renders offscreen only, and saves a video plus
+periodic snapshot PNGs to `media/frames/` instead.
 
 **Phase 2 -- Colab (GPU):** open `colab_train.ipynb`, which handles mounting Drive, cloning
 fresh each session, installing dependencies, `wandb login`, training with checkpoints written

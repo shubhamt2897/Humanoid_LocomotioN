@@ -18,6 +18,13 @@ actual measured ground velocity, both live in the viewer and baked into any reco
 pass --no_arrows to turn this off. Both are flattened to the ground plane (the target uses the
 robot's heading only, not torso lean), so they're directly comparable. Before training, expect
 the two arrows to look unrelated; a well-trained policy should show them roughly aligned.
+
+With --headless, no viewer window opens at all -- the whole rollout renders via the offscreen
+renderer, auto-records a video, and drops periodic snapshot PNGs into <video_dir>/frames/, for
+checking a checkpoint's behavior with no display attached (e.g. reviewing a fresh checkpoint by
+reading a handful of the saved PNGs rather than watching the live window):
+
+    python play.py --headless --checkpoint logs/asymmetric_payload_run_v4/model_999.pt --duration_s 15
 """
 
 from __future__ import annotations
@@ -153,18 +160,22 @@ class VideoRecorder:
         print("[record] stopped")
         self.writer = None
 
-    def capture_frame(self, data, arrow_vecs: tuple | None = None) -> None:
+    def capture_frame(self, data, arrow_vecs: tuple | None = None, snapshot_path: str | None = None) -> None:
         with self._lock:
-            if self.writer is None:
+            if self.writer is None and snapshot_path is None:
                 return
-            self._render_and_write_locked(data, arrow_vecs)
+            frame = self._render_frame_locked(data, arrow_vecs)
+            if self.writer is not None:
+                self.writer.append_data(frame)
+            if snapshot_path is not None:
+                self._imageio.imwrite(snapshot_path, frame)
 
-    def _render_and_write_locked(self, data, arrow_vecs: tuple | None) -> None:
+    def _render_frame_locked(self, data, arrow_vecs: tuple | None) -> np.ndarray:
         self.renderer.update_scene(data, camera=self.camera)
         if arrow_vecs is not None:
             origin, target_vec, actual_vec = arrow_vecs
             _draw_velocity_arrows(self.renderer.scene, self.renderer.scene.ngeom, origin, target_vec, actual_vec)
-        self.writer.append_data(self.renderer.render())
+        return self.renderer.render()
 
     def close(self) -> None:
         with self._lock:
@@ -188,7 +199,45 @@ def parse_args() -> argparse.Namespace:
         "--no_arrows", action="store_true",
         help="Disable the target-velocity (green) / actual-velocity (orange) arrow overlay.",
     )
+    parser.add_argument(
+        "--headless", action="store_true",
+        help="Skip the interactive viewer window entirely -- render only via the offscreen renderer, "
+        "auto-recording the whole rollout to <video_dir> plus periodic snapshot PNGs to "
+        "<video_dir>/frames/. For checking a checkpoint's behavior with no display attached.",
+    )
+    parser.add_argument(
+        "--snapshot_interval_s", type=float, default=1.0,
+        help="Headless mode only: seconds between saved snapshot PNGs.",
+    )
     return parser.parse_args()
+
+
+def run_headless(env, policy, env_cfg: EnvCfg, args: argparse.Namespace) -> None:
+    model, data = env.sim.models[0], env.sim.datas[0]
+    tag = os.path.splitext(os.path.basename(args.checkpoint))[0] if args.checkpoint else "random_init"
+    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    frames_dir = os.path.join(args.video_dir, "frames", f"{tag}_{stamp}")
+    os.makedirs(frames_dir, exist_ok=True)
+
+    recorder = VideoRecorder(model, args.video_dir, tag, fps=1.0 / env_cfg.control_dt, track_body_id=env.sim.pelvis_body_id)
+    recorder.toggle(data)  # headless always records for the full duration, no R-key wait
+
+    snapshot_every = max(1, round(args.snapshot_interval_s / env_cfg.control_dt))
+    n_steps = max(1, round(args.duration_s / env_cfg.control_dt))
+    print(f"[headless] running {n_steps} steps, snapshot every {args.snapshot_interval_s}s -> {frames_dir}")
+
+    obs = env.get_observations()
+    try:
+        for step in range(n_steps):
+            with torch.inference_mode():
+                actions = policy(obs)
+            obs, _, _, _ = env.step(actions)
+            arrow_vecs = None if args.no_arrows else _velocity_arrow_vectors(env)
+            snapshot_path = os.path.join(frames_dir, f"frame_{step:05d}.png") if step % snapshot_every == 0 else None
+            recorder.capture_frame(data, arrow_vecs, snapshot_path=snapshot_path)
+    finally:
+        recorder.close()
+    print(f"[headless] done -> {frames_dir}")
 
 
 def main() -> None:
@@ -213,6 +262,10 @@ def main() -> None:
     obs = env.get_observations()
     model, data = env.sim.models[0], env.sim.datas[0]
     print(f"Command (vx, vy, wz): {env.commands[0]}")
+
+    if args.headless:
+        run_headless(env, policy, env_cfg, args)
+        return
 
     recorder = None
     if args.record:
