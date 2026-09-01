@@ -29,13 +29,21 @@ class RewardScales:
     zmp_margin: float = -0.2
     torque_penalty: float = -1.0e-5
     action_rate_penalty: float = -0.01
-    # asymmetric_payload_run_v2 (5000 iters) plateaued at ~64/1000 step episodes (6.4% of max)
-    # and never improved past iteration ~1000 -- alive_bonus was too small relative to the
-    # penalty terms below (0.1 vs. base_height's -10.0) to give PPO much incentive to fight for
-    # extra survival time. A comparable open-source G1/PPO/rsl_rl-style policy that *did* learn
-    # stable standing (836/1000 step episodes) used alive_bonus=5.0:
-    # https://huggingface.co/hardware-pathon-ai/unitree-g1-phase1-locomotion
-    alive_bonus: float = 5.0
+    # History: asymmetric_payload_run_v2 (5000 iters) plateaued at ~64/1000 step episodes (6.4%
+    # of max) with alive_bonus=0.1 -- too small relative to the penalty terms to give PPO much
+    # incentive to fight for extra survival time. Bumped to 5.0 for v3/v4/v5 based on a comparable
+    # open-source G1 policy (https://huggingface.co/hardware-pathon-ai/unitree-g1-phase1-locomotion)
+    # that used that value -- but that repo is Isaac-Gym Phase-1 standing-only (frozen arms, no
+    # velocity-tracking goal), not a walking policy. Checking Unitree's own *official* G1
+    # velocity-locomotion config (the exact robot, the exact task) instead:
+    # https://github.com/unitreerobotics/unitree_rl_lab/blob/main/source/unitree_rl_lab/unitree_rl_lab/tasks/locomotion/robots/g1/29dof/velocity_env_cfg.py
+    # -- their alive weight is 0.15, ~33x smaller than our 5.0. At 5.0, alive_bonus dominates the
+    # per-step reward over lin_vel_tracking/ang_vel_tracking (confirmed in asymmetric_payload_run_v3's
+    # logs -- see PROGRESS.md), which plausibly explains why entropy/action-std climbed unchecked
+    # even with entropy_coef=0.01 matching Unitree's own value exactly: with alive_bonus this
+    # dominant, there's little reward cost to noisy/imprecise actions to counteract entropy_coef's
+    # upward pressure. Set to Unitree's own value for asymmetric_payload_run_v6.
+    alive_bonus: float = 0.15
     # Stability terms below match Unitree's official G1 RL config (see rewards.py for the
     # per-term explanation of what each one physically means for the robot):
     # https://github.com/unitreerobotics/unitree_rl_gym/blob/main/legged_gym/envs/g1/g1_config.py
