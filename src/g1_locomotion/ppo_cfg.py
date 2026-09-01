@@ -36,14 +36,13 @@ def build_train_cfg(
             "distribution_cfg": {
                 "class_name": "GaussianDistribution",
                 "init_std": 1.0,
-                # Default std_range is (1e-6, 1e6) -- effectively unbounded. asymmetric_payload_run_v3
-                # showed Policy/mean_std and Loss/entropy climbing monotonically 1.08->2.31 and
-                # 43.2->65.0 over 5000 iterations, never turning over: nothing was capping std, and
-                # env.py clips sampled actions to [-1, 1] *after* sampling, so log_prob/entropy never
-                # see that clipping -- inflating std past ~1.0 cost the policy almost nothing while
-                # entropy_coef kept rewarding it. Capping at init_std lets PPO shrink std (commit to
-                # confident actions) but never grow it past where it started.
-                "std_range": [0.1, 1.0],
+                # v4 (std_range=[0.1, 1.0], same as init_std) fixed v3's unbounded climb but pinned
+                # Policy/mean_std at exactly 1.0 for 900+ iterations with zero variance: init_std sat
+                # exactly at the ceiling, and torch.clamp() has zero gradient outside its bounds, so the
+                # first optimizer step that nudged the raw parameter above 1.0 froze it there for good
+                # (no gradient could pull it back down). Raising the ceiling here gives it genuine room
+                # on both sides of init_std to actually move before hitting either bound.
+                "std_range": [0.1, 1.5],
             },
         },
         "critic": {
