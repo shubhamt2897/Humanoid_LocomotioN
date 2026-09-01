@@ -115,6 +115,10 @@ def zmp_margin_violation(state: dict) -> np.ndarray:
         dist_pt = np.linalg.norm(cop - foot_xy[:, foot_idx], axis=-1)
         violation = np.where(only_this, np.clip(dist_pt - SUPPORT_RADIUS, 0.0, None) / SUPPORT_RADIUS, violation)
 
+    # Cap grounded excursions at the same 1.0 ceiling as "airborne" below, so a badly-balanced but
+    # still-grounded stance can never out-penalize losing ground contact entirely.
+    violation = np.clip(violation, 0.0, 1.0)
+
     airborne = ~contact.any(axis=-1)
     violation = np.where(airborne, 1.0, violation)
     return violation
@@ -141,7 +145,7 @@ def compute_reward(
         "lin_vel_tracking": scales.lin_vel_tracking * lin_vel_tracking(state, commands),
         "ang_vel_tracking": scales.ang_vel_tracking * ang_vel_tracking(state, commands),
         "contact_timing": scales.contact_timing * contact_timing(feet_air_time, new_contact),
-        "double_flight": scales.contact_timing * -double_flight_penalty(state["foot_contact"]),
+        "double_flight": scales.double_flight * double_flight_penalty(state["foot_contact"]),
         "zmp_margin": scales.zmp_margin * zmp_margin_violation(state),
         "torque_penalty": scales.torque_penalty * torque_penalty(state["joint_torque"]),
         "action_rate_penalty": scales.action_rate_penalty * action_rate_penalty(actions, prev_actions),

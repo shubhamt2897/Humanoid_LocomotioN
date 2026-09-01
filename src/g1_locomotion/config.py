@@ -25,6 +25,7 @@ class RewardScales:
     lin_vel_tracking: float = 1.5
     ang_vel_tracking: float = 0.75
     contact_timing: float = 0.3
+    double_flight: float = -0.3
     zmp_margin: float = -0.2
     torque_penalty: float = -1.0e-5
     action_rate_penalty: float = -0.01

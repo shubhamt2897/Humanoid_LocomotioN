@@ -33,7 +33,18 @@ def build_train_cfg(
             "hidden_dims": [256, 128, 64],
             "activation": "elu",
             "obs_normalization": True,
-            "distribution_cfg": {"class_name": "GaussianDistribution", "init_std": 1.0},
+            "distribution_cfg": {
+                "class_name": "GaussianDistribution",
+                "init_std": 1.0,
+                # Default std_range is (1e-6, 1e6) -- effectively unbounded. asymmetric_payload_run_v3
+                # showed Policy/mean_std and Loss/entropy climbing monotonically 1.08->2.31 and
+                # 43.2->65.0 over 5000 iterations, never turning over: nothing was capping std, and
+                # env.py clips sampled actions to [-1, 1] *after* sampling, so log_prob/entropy never
+                # see that clipping -- inflating std past ~1.0 cost the policy almost nothing while
+                # entropy_coef kept rewarding it. Capping at init_std lets PPO shrink std (commit to
+                # confident actions) but never grow it past where it started.
+                "std_range": [0.1, 1.0],
+            },
         },
         "critic": {
             "class_name": "MLPModel",
