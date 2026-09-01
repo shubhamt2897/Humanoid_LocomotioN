@@ -18,13 +18,15 @@ working log, gitignored -- not included in this repository's git history).
 
 ### Training progression so far
 
-Single continuous rollouts (no reset), one frame from each -- same fixed camera, same MuJoCo
-viewer. Not a curated highlight, just an honest frame from each checkpoint's typical behavior:
+Single continuous 6-second rollouts (no reset), same fixed camera, same MuJoCo viewer, captured
+via `play.py --headless`. Not curated highlights -- one representative frame plus the full clip
+for each, showing typical behavior at that checkpoint:
 
 | Random init | `v3` (5000 iters, old reward) | `v6` (2500 iters, rebalanced reward) |
 |:---:|:---:|:---:|
 | ![Random init](media/progression/01_random_init.png) | ![v3 checkpoint](media/progression/02_v3_5000iter_old_reward.png) | ![v6 checkpoint](media/progression/03_v6_2500iter_rebalanced.png) |
 | No training at all -- collapses within about a second. | Stands, but braces in a stiff, defensive "arms-forward" stance before eventually toppling forward. | Stands with arms hanging naturally rather than braced -- direct result of rebalancing `alive_bonus` so survival stops dominating the reward (see "PPO training-stability fixes" below). Still falls; doesn't yet attempt to lift a foot. |
+| [full clip](media/progression/01_random_init.mp4) | [full clip](media/progression/02_v3_5000iter_old_reward.mp4) | [full clip](media/progression/03_v6_2500iter_rebalanced.mp4) |
 
 ## What this is
 
