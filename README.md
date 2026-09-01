@@ -23,11 +23,32 @@ via `play.py --headless`. Not curated highlights -- the actual, typical behavior
 checkpoint, looping automatically below (same resolution/length/frame rate for all three; higher-res
 `.mp4` originals linked underneath each if you want full quality):
 
-| Random init | `v3` (5000 iters, old reward) | `v6` (2500 iters, rebalanced reward) |
-|:---:|:---:|:---:|
-| ![Random init](media/progression/01_random_init.gif) | ![v3 checkpoint](media/progression/02_v3_5000iter_old_reward.gif) | ![v6 checkpoint](media/progression/03_v6_2500iter_rebalanced.gif) |
-| [full-res .mp4](media/progression/01_random_init.mp4) | [full-res .mp4](media/progression/02_v3_5000iter_old_reward.mp4) | [full-res .mp4](media/progression/03_v6_2500iter_rebalanced.mp4) |
-| No training at all -- collapses within about a second. | Stands, but braces in a stiff, defensive "arms-forward" stance before eventually toppling forward. | Stands with arms hanging naturally rather than braced -- direct result of rebalancing `alive_bonus` so survival stops dominating the reward (see "PPO training-stability fixes" below). Still falls; doesn't yet attempt to lift a foot. |
+<table>
+<tr>
+<td align="center" width="50%"><b>Random init</b></td>
+<td align="center" width="50%"><b><code>v3</code> (5000 iters, old reward)</b></td>
+</tr>
+<tr>
+<td align="center"><img src="media/progression/01_random_init.gif" width="300"/></td>
+<td align="center"><img src="media/progression/02_v3_5000iter_old_reward.gif" width="300"/></td>
+</tr>
+<tr>
+<td align="center">No training at all -- collapses within about a second.<br/><a href="media/progression/01_random_init.mp4">full-res .mp4</a></td>
+<td align="center">Stands, but braces in a stiff, defensive "arms-forward" stance before eventually toppling forward.<br/><a href="media/progression/02_v3_5000iter_old_reward.mp4">full-res .mp4</a></td>
+</tr>
+<tr><td colspan="2">&nbsp;</td></tr>
+<tr>
+<td align="center" colspan="2"><b><code>v6</code> (2500 iters, rebalanced reward)</b></td>
+</tr>
+<tr>
+<td align="center" colspan="2"><img src="media/progression/03_v6_2500iter_rebalanced.gif" width="300"/></td>
+</tr>
+<tr>
+<td align="center" colspan="2">Stands with arms hanging naturally rather than braced -- direct result of rebalancing
+<code>alive_bonus</code> so survival stops dominating the reward (see "PPO training-stability fixes" below).
+Still falls; doesn't yet attempt to lift a foot.<br/><a href="media/progression/03_v6_2500iter_rebalanced.mp4">full-res .mp4</a></td>
+</tr>
+</table>
 
 ## What this is
 
