@@ -1,27 +1,43 @@
 # Robust Humanoid Locomotion (Unitree G1)
 
+[![Checkpoints on Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97%20Checkpoints-shubhamt0802%2Fhmn__loc__RL-yellow)](https://huggingface.co/buckets/shubhamt0802/hmn_loc_RL)
+[![Training runs on W&B](https://img.shields.io/badge/W%26B-training%20runs-ff7043?logo=weightsandbiases&logoColor=white)](https://wandb.ai/shubhamt2897-hochschule-schmalkalden/g1_robust_locomotion)
+[![Technical docs](https://img.shields.io/badge/docs-implementation%20details-blue)](src/README.md)
+
+## Objective
+
+A walking policy for the Unitree G1 humanoid (29-DOF), trained in MuJoCo with PPO. The end goal
+is a policy that's **robust to disturbances it has to infer from its own senses** -- pushes,
+shifted payload, uneven ground -- using only proprioception (joint angles/velocities, IMU, its
+own recent actions), the same limited information the real hardware would have. No cameras, no
+privileged state at deployment time.
+
 ## Current status
 
-**Not walking yet.** This project's end goal is a policy that's robust to pushes, payload shifts,
-and rough terrain -- but right now it's still at the earlier, more basic milestone: **learning to
-stand and take a single step from scratch, on flat ground.** Domain randomization for payload
-mass/CoM and pushes is implemented and already active during training (see below), but until
-basic flat-ground standing/stepping actually works, none of that robustness can be meaningfully
-evaluated -- there's no point testing "can it recover from a push" before it can stand at all.
-`asymmetric_payload_run_v6` (2500 iterations): stood with a natural posture and survived longer
-than earlier attempts, but never attempted to lift a foot (`contact_timing` reward was exactly
-zero in the final iterations) -- it just stood rigidly until it toppled. Fix applied for
-`asymmetric_payload_run_v7` (running now): strengthened `contact_timing` and added a new
-`feet_clearance` reward that pays out for just lifting a foot, not only a full completed step
-(see "Reward function" below). Full run-by-run diagnostic history is in `PROGRESS.md` (a local
-working log, gitignored -- not included in this repository's git history).
+**Not walking yet.** Domain randomization (payload mass/CoM, pushes) is implemented and already
+active during training, but the project is still at the earlier milestone of learning to stand
+and take a single step from scratch on flat ground -- robustness can't be meaningfully evaluated
+before basic locomotion works. Latest run (`asymmetric_payload_run_v7`) adds a reward specifically
+for attempting to lift a foot, after the prior run showed the policy had learned to stand rigidly
+and never step at all. Full run-by-run diagnostic history: `PROGRESS.md` (local working log,
+gitignored, not in this repository's git history).
 
-### Training progression so far
+## Method, in brief
+
+PPO (`rsl_rl`), with an asymmetric actor-critic split: the deployed policy sees only what real
+hardware could sense, while the critic (training-time only) additionally sees privileged
+simulator state -- true velocity, ground-reaction forces, the exact randomized payload/friction --
+to give it a sharper learning signal without leaking into the deployed policy. Full architecture,
+reward function, PPO hyperparameters, and the complete diagnostic history of what's been tried and
+why: **[src/README.md](src/README.md)**.
+
+## Results
+
+### Training progression
 
 Single continuous 6-second rollouts (no reset), same fixed camera, same MuJoCo viewer, captured
 via `play.py --headless`. Not curated highlights -- the actual, typical behavior at each
-checkpoint, looping automatically below (same resolution/length/frame rate for all three; higher-res
-`.mp4` originals linked underneath each if you want full quality):
+checkpoint, looping automatically below (higher-res `.mp4` originals linked underneath each):
 
 <table>
 <tr>
@@ -44,260 +60,51 @@ checkpoint, looping automatically below (same resolution/length/frame rate for a
 <td align="center" colspan="2"><img src="media/progression/03_v6_2500iter_rebalanced.gif" width="300"/></td>
 </tr>
 <tr>
-<td align="center" colspan="2">Stands with arms hanging naturally rather than braced -- direct result of rebalancing
-<code>alive_bonus</code> so survival stops dominating the reward (see "PPO training-stability fixes" below).
-Still falls; doesn't yet attempt to lift a foot.<br/><a href="media/progression/03_v6_2500iter_rebalanced.mp4">full-res .mp4</a></td>
+<td align="center" colspan="2">Stands with arms hanging naturally rather than braced -- direct result of
+rebalancing <code>alive_bonus</code> so survival stops dominating the reward (see
+<a href="src/README.md">src/README.md</a>). Still falls; doesn't yet attempt to lift a foot.<br/>
+<a href="media/progression/03_v6_2500iter_rebalanced.mp4">full-res .mp4</a></td>
 </tr>
 </table>
 
-## What this is
+### Training curves
 
-A walking policy for the Unitree G1 humanoid, trained in MuJoCo with PPO. The design intent --
-not yet a demonstrated result -- is **robustness the policy has to earn through its own senses**,
-not a vanilla "walk forward on flat ground" controller: during training the robot gets hit with
-random pushes and carries random extra payload mass shifted around its torso, and (eventually,
-once flat-ground walking itself works) will walk on procedurally bumpy terrain. It never gets to
-see any of that directly. All it has at deployment time is proprioception -- joint angles, joint
-velocities, an IMU, and its own recent actions -- and it has to *infer* what's throwing it off
-balance from how its own joints react, the same way the real hardware would have to. (A longer
-design brief this implementation was originally planned against exists locally as
-`Project Specification.md`, but it's a personal working doc, gitignored, and not part of this
-repository -- treat this README as the source of truth for what's actually implemented.)
+Two metrics, three runs -- read together, not separately. `v3` "wins" on raw survival time, but
+that's mostly a reward-shaping artifact (a large `alive_bonus` rewarding survival regardless of
+tracking quality). `v6` and `v7` -- with that bonus rebalanced down to Unitree's own official
+value -- reach *better* velocity-tracking quality in under half the iterations, which is the
+metric that actually reflects walking ability:
 
-## The core idea: asymmetric actor-critic
+<table>
+<tr>
+<td width="50%"><img src="media/results/episode_length_comparison.png"/></td>
+<td width="50%"><img src="media/results/tracking_quality_comparison.png"/></td>
+</tr>
+</table>
 
-Two networks are trained together, but they don't see the same things:
+Live, explorable versions of every logged metric (not just these two) are on
+[Weights & Biases](https://wandb.ai/shubhamt2897-hochschule-schmalkalden/g1_robust_locomotion).
 
-- **The actor** (the one that actually gets deployed) sees only what a real G1 could sense
-  onboard: joint positions/velocities, gravity direction + angular velocity from the IMU, its own
-  previous action, and the commanded velocity. No cameras, no ground-truth physics.
-- **The critic** (training-time only, thrown away afterward) additionally sees privileged
-  simulator state that doesn't exist on real hardware: the robot's *true* velocity, exact ground
-  reaction forces, and the exact payload mass/CoM/friction that were randomized this episode.
+## Checkpoints
 
-The critic's job is just to give the actor a better learning signal during training -- since it
-knows *why* the robot is being pushed off balance this episode, it can judge the actor's actions
-more accurately than if it only saw the same limited view the actor does. The actor still has to
-solve the hard problem alone: react correctly to a payload it can't see, using only the way its
-own joints are behaving.
+All checkpoints (`model_<N>.pt`, `rsl_rl`/PPO format) and each run's TensorBoard event file are in
+the public HF bucket, organized by run name:
 
-## Reward function: what is the robot actually being rewarded for?
+**[huggingface.co/buckets/shubhamt0802/hmn_loc_RL](https://huggingface.co/buckets/shubhamt0802/hmn_loc_RL)**
 
-Every simulation step produces a handful of independent signals, each capturing one specific
-idea, which get scaled and summed into a single number PPO optimizes. All of them live in
-[`rewards.py`](src/g1_locomotion/rewards.py); weights live in
-[`config.py::RewardScales`](src/g1_locomotion/config.py).
+```
+hf buckets ls shubhamt0802/hmn_loc_RL/asymmetric_payload_run_v7
+hf buckets cp hf://buckets/shubhamt0802/hmn_loc_RL/asymmetric_payload_run_v7/model_<N>.pt ./model_<N>.pt
+```
 
-| Term | Weight | Physically, what is this rewarding or punishing? |
-|---|---:|---|
-| `lin_vel_tracking` | +1.5 | Walking at the commanded speed, in the commanded direction. This is the actual goal -- everything else exists to make it achievable without falling over. |
-| `ang_vel_tracking` | +0.75 | Turning at the commanded rate. |
-| `contact_timing` | +0.5 | Rewards a foot touching down after a proper swing phase (~0.2-0.5s in the air), not an instant tap -- encourages a real walking gait over shuffling. Raised from `0.3`: `asymmetric_payload_run_v6` showed this was exactly zero for the final 1000+ iterations -- the policy had learned to just stand rigidly rather than ever attempt a step, since lifting a foot narrows its stable base and risks several balance penalties for a reward that only paid out *after* a full, well-timed swing-and-land cycle completed (no partial credit for trying). |
-| `feet_clearance` | +1.0 | New for `v7`. Rewards a lifted (non-contact) foot for reaching a reasonable swing height (~8cm), whether or not it completes a full step -- unlike `contact_timing`, this pays out for just *attempting* to lift a foot. Matches Unitree's own official config, which uses a separate `feet_clearance` term at this same weight alongside their `gait` term (their combined foot-related incentive is ~5x ours before this addition). Assumes flat ground (world z=0 as "foot on ground") -- would need a ground-height offset if terrain is re-enabled. |
-| `double_flight` | -0.3 | Penalizes both feet being off the ground at once -- no hopping/jumping in place of walking. Has its own dedicated scale (previously reused `contact_timing`'s weight -- a bug, fixed for `asymmetric_payload_run_v4`, since that coupled two unrelated behaviors under one tuning knob). |
-| `zmp_margin` | -0.2 | Soft penalty as the center of pressure drifts toward the edge of the foot/feet currently in contact -- a cheap approximation of "don't overbalance your stance." Grounded violations are clipped to the same `[0, 1]` range as the airborne case (fixed for `v4`) so a badly-balanced-but-grounded stance can never score worse than losing ground contact entirely. |
-| `torque_penalty` | -1e-5 | Penalizes `Σ torque²` across all 29 joints -- energy efficiency, and keeps the policy from relying on violent, hardware-damaging corrections. |
-| `action_rate_penalty` | -0.01 | Penalizes jerky, fast-changing actions frame to frame -- favors smooth control. |
-| `orientation` | -1.0 | **Penalizes torso tilt, continuously, every single step.** Computed from `projected_gravity` (which way "down" appears in the robot's own body frame -- (0,0,-1) exactly means perfectly upright). This is the one that actually teaches "leaning = bad" while there's still time to correct, rather than only finding out once it's already fallen past the point of no return. |
-| `base_height` | -10.0 | Penalizes the pelvis straying from its normal standing height -- keeps posture close to "standing normally" instead of gaming other rewards by crouching or launching upward. |
-| `lin_vel_z` | -2.0 | Penalizes vertical bounce/bob in the pelvis. A good gait keeps torso height roughly steady. |
-| `ang_vel_xy` | -0.05 | Penalizes roll/pitch *rotation rate* -- catches the robot actively tipping over as it's happening, complementing `orientation`'s "already tilted" check. |
-| `alive_bonus` | +0.15 | A flat reward every step the episode hasn't ended. History: started at `0.1` (too small -- `asymmetric_payload_run_v2` plateaued at ~6% of max episode length), raised to `5.0` for `v3`-`v5` based on a different open-source G1 policy (https://huggingface.co/hardware-pathon-ai/unitree-g1-phase1-locomotion) -- but that repo is a frozen-arms, standing-only task, not velocity-tracking walking. At `5.0` it ended up dominating the per-step reward over the actual tracking terms. Checked against Unitree's own *official* G1 velocity-locomotion config instead (same robot, same task) -- their value is `0.15` -- and switched to that for `v6` onward: https://github.com/unitreerobotics/unitree_rl_lab/blob/main/source/unitree_rl_lab/unitree_rl_lab/tasks/locomotion/robots/g1/29dof/velocity_env_cfg.py |
-
-**Why the last four exist:** early versions of this reward function had no continuous "stay
-upright" signal at all -- only the flat `alive_bonus` (which doesn't care *how* upright the robot
-is, only whether the episode is still running) and a hard termination once the robot had *already*
-tipped past a fall threshold. That's enough of a gap that a partially-trained policy could
-actually end up walking (well, falling) worse than random joint noise: fighting to stay balanced
-costs `torque_penalty`/`action_rate_penalty` every step with nothing offsetting it, so an
-under-trained policy can find it "cheaper" to just go limp and fall quickly. `orientation`,
-`base_height`, `lin_vel_z`, and `ang_vel_xy` close that gap, matching Unitree's own official G1 RL
-config and ETH Zurich's `legged_gym` convention that this project's reward style otherwise follows:
-https://github.com/unitreerobotics/unitree_rl_gym/blob/main/legged_gym/envs/g1/g1_config.py
-
-## PPO training-stability fixes (`ppo_cfg.py`)
-
-`asymmetric_payload_run_v3` (5000 iterations, `alive_bonus=5.0`) trained without collapsing, but
-two of its training-diagnostic curves never converged: `Policy/mean_std` (the actor's action
-standard deviation) and `Loss/entropy` climbed **monotonically for the entire run** (std:
-1.08 -> 2.31), and `Loss/learning_rate` oscillated erratically between its clamps (`1e-5` and
-`1e-2`) instead of settling. Root cause, found by reading into the `rsl_rl` library's actual
-source rather than just the metrics: `distribution_cfg` never set an explicit `std_range`, so
-`GaussianDistribution`'s default `(1e-6, 1e6)` applied -- effectively no ceiling. Meanwhile
-`rl_env.py` clips sampled actions to `[-1, 1]` for the simulator, but that clipping happens
-*after* sampling, so `log_prob`/entropy (and the KL divergence driving the adaptive learning-rate
-rule) never see it -- inflating `std` cost the policy almost nothing while `entropy_coef` kept
-rewarding it, and the resulting noisy KL estimates fed the erratic learning-rate swings.
-
-Fix applied in `asymmetric_payload_run_v4`: `distribution_cfg` now sets an explicit `std_range`.
-First attempt (`[0.1, 1.0]`, matching `init_std`) stopped the runaway, but exposed a second, more
-precise mechanism: `init_std` sat *exactly* at the new ceiling, and `torch.clamp()` has zero
-gradient outside its bounds -- so the first optimizer step that nudged the raw parameter above
-`1.0` froze it there for the rest of training (`Policy/mean_std` was bit-for-bit `1.0000` for
-900+ consecutive iterations). `asymmetric_payload_run_v5` widened the range to `[0.1, 1.5]` so
-`init_std` has genuine room on both sides -- confirmed via a 1000-iteration smoke test that `std`
-now moves smoothly instead of freezing, though it was still climbing (not yet plateaued) at that
-point, same shape as `v3`'s original climb.
-
-That last detail turned out to matter: Unitree's own official G1 PPO config
-(`unitree_rl_lab`) uses the *same* `entropy_coef=0.01` we do, without (apparently) this runaway
--- so `entropy_coef` itself is probably not the bug. The more likely explanation, found by
-comparing our full reward table against theirs (see `alive_bonus` above): with `alive_bonus=5.0`
-dominating the per-step reward, there's little cost to noisy/imprecise actions to counteract
-`entropy_coef`'s upward pressure on `std`. `asymmetric_payload_run_v6` rebalanced `alive_bonus`
-down to Unitree's own `0.15` as the more targeted fix, and it worked for what it targeted:
-`lin_vel_tracking`/`ang_vel_tracking` improved faster and further than in any earlier run, and
-standing posture visibly relaxed (arms hang naturally instead of a stiff braced stance). `std`
-and entropy are *still* climbing, unresolved, in `v6` too -- so `[0.1, 1.5]` alone isn't the full
-fix either; this remains an open thread, not blocking progress so far but worth revisiting.
-See `PROGRESS.md` (local, gitignored working log) for the full run-by-run diagnostic history.
-
-Termination itself is separate from all of the above: an episode ends early if the pelvis drops
-below 0.5m or `projected_gravity`'s vertical component exceeds 0.6 (i.e. the robot has actually
-tipped over) -- both judged relative to gravity/world-vertical, not local terrain slope, so the
-correct learned behavior is "torso stays level, legs and feet adapt to the ground," not "match
-whatever angle the ground happens to be."
-
-## PD gains
-
-Leg joints (hip/knee/ankle) use Unitree's own official values for this robot, not guessed
-constants:
-https://github.com/unitreerobotics/unitree_rl_gym/blob/main/legged_gym/envs/g1/g1_config.py
-
-| Joint group | Kp | Kd | Action scale |
-|---|---:|---:|---:|
-| Hip (pitch/roll/yaw) | 100 | 2.0 | 0.25 |
-| Knee | 150 | 4.0 | 0.25 |
-| Ankle (pitch/roll) | 40 | 2.0 | 0.25 |
-| Waist | 150 | 3.0 | 0.15 |
-| Arm | 40 | 1.0 | 0.30 |
-| Wrist | 15 | 0.3 | 0.30 |
-
-Unitree's reference config only actuates the 12 leg joints; this robot has 29 DOF (waist and
-arms too), so those extra groups have no official counterpart and remain reasonable
-starting-point estimates -- see [`robot.py`](src/g1_locomotion/robot.py).
-
-## Domain randomization
-
-Applied at every episode reset, so the actor is forced to adapt within an episode rather than
-memorize one fixed physical setup:
-
-- **Payload mass**: 0-5 kg added to the torso.
-- **Payload CoM offset**: shifted up to ±5cm per axis, simulating carrying the load on the chest
-  vs. the back vs. off-center.
-- **Floor friction**: randomized between 0.4 and 1.2.
-- **Push perturbations**: random impulse kicks to the base every 3-5 seconds.
-- **Procedural terrain** (Perlin-noise heightfield): implemented, currently disabled
-  (`terrain_enabled=False`) until flat-ground standing/tracking is solid.
-
-## Setup
+## Quickstart
 
 ```
 conda activate humanoid_locomotion
-python check_env.py   # verify torch/mujoco/rsl_rl/wandb/numpy import cleanly
-```
-
-## Layout
-
-- `assets/g1/scene_train.xml` -- G1 29-DOF scene with a heightfield terrain that gets
-  regenerated (Perlin noise) every episode reset.
-- `src/g1_locomotion/`
-  - `robot.py` -- joint order, PD gains, action scale.
-  - `mujoco_env.py` -- N independent MjModel/MjData instances (CPU-parallel Phase 1 backend),
-    domain randomization, PD control, sensor/contact readout.
-  - `terrain.py` -- procedural Perlin-noise heightfield generation.
-  - `rewards.py` -- velocity tracking, stability (orientation/height/bounce), contact timing,
-    ZMP margin, torque/action-rate regularization.
-  - `rl_env.py` -- `rsl_rl`-compatible `VecEnv`; builds the `actor_obs`/`critic_obs`
-    TensorDict split.
-  - `config.py` / `ppo_cfg.py` -- env and PPO hyperparameters.
-- `train.py`, `play.py`, `export_policy.py` -- entry points (see next section).
-
-## Usage
-
-**Phase 1 -- local sanity check (CPU, num_envs=2):**
-```
+python check_env.py                                        # verify the environment
 python train.py --num_envs 2 --device cpu --iterations 20 --run_name smoke_test
-python play.py --checkpoint logs/smoke_test/model_19.pt   # visual check via mujoco viewer
+python play.py --checkpoint logs/smoke_test/model_19.pt     # visual check via mujoco viewer
 ```
-(`rsl_rl`'s training loop is 0-indexed, so a 20-iteration run's last checkpoint is `model_19.pt`,
-not `model_20.pt` -- check `logs/smoke_test/` for whichever `model_<N>.pt` is actually highest.)
 
-No display attached (e.g. checking a checkpoint pulled from a cloud run)? `play.py --headless
---checkpoint <path>` skips the interactive viewer, renders offscreen only, and saves a video plus
-periodic snapshot PNGs to `media/frames/` instead.
-
-**Phase 2 -- Colab (GPU):** open `colab_train.ipynb`, which handles mounting Drive, cloning
-fresh each session, installing dependencies, `wandb login`, training with checkpoints written
-straight to Drive (so a disconnect doesn't lose progress), and a resume cell for continuing from
-the latest checkpoint.
-```
-wandb login
-python train.py --num_envs 64 --device cuda --iterations 500 --save_interval 100 \
-  --wandb --run_name asymmetric_payload_run_v2
-```
-Note: this repo's physics backend (`mujoco_env.py`) parallelizes envs with a Python loop over
-independent CPU simulations. It is correct at any `num_envs`, but Phase 2's GPU-batched
-`mujoco-warp` throughput described in the spec is not implemented -- swapping in a warp-batched
-backend behind the same `step()`/`reset_idx()` contract is the remaining Phase 2 work. It also
-means every env carries its own full copy of the robot's mesh geometry, which in practice caps
-free-tier Colab (~12-13GB RAM) at roughly 64-128 envs today, well short of the spec's `num_envs
-= 1024` target -- that scale needs the GPU-batched backend above, not just more patience.
-
-**Phase 2 (alt) -- Hugging Face Jobs (GPU):** no Colab session needed; runs on HF's cloud from a
-plain terminal via the `hf` CLI (`hf auth login` once beforehand). Checkpoints go to an HF
-[storage bucket](https://huggingface.co/docs/hub/storage-buckets) instead of Drive, so a job
-timing out doesn't lose progress either. Replace `<hf-username>`, `<bucket-name>`, and
-`<wandb-api-key>` below with your own:
-```
-hf buckets create <hf-username>/<bucket-name> --exist-ok   # one-time, free at this checkpoint scale
-
-export WANDB_API_KEY='<wandb-api-key>'
-hf jobs run --flavor t4-small --timeout 6h -d \
-  --secrets WANDB_API_KEY=$WANDB_API_KEY \
-  -v hf://buckets/<hf-username>/<bucket-name>:/checkpoints \
-  pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime \
-  bash -c "apt-get update -qq && apt-get install -y -qq git > /dev/null && \
-    git clone https://github.com/shubhamt2897/Humanoid_LocomotioN.git /repo && cd /repo && \
-    pip install -q mujoco==3.12.0 rsl-rl-lib==5.5.0 tensordict==0.14.0 wandb==0.29.0 onnx==1.22.0 imageio==2.37.4 imageio-ffmpeg==0.6.0 && \
-    python train.py --num_envs 64 --device cuda --iterations 5000 --save_interval 250 \
-      --wandb --run_name asymmetric_payload_run_v2 --log_dir /checkpoints/asymmetric_payload_run_v2"
-```
-Notes learned the hard way:
-- The `pytorch/pytorch:*-runtime` image has no `git` -- install it first or the clone silently
-  fails with exit code 127.
-- `--secrets WANDB_API_KEY` (no `=value`) does **not** forward your local env var -- that
-  bare-name shorthand is special-cased for `HF_TOKEN` only. Any other secret needs the explicit
-  `NAME=value` form shown above.
-- `-d` (detached) avoids streaming logs back to the terminal at all -- on Windows consoles this
-  sidesteps a `charmap` codec crash from Unicode characters in wandb's output (the job itself
-  keeps running server-side regardless; only the local log stream would die). Poll status with
-  `hf jobs inspect <job_id>` and logs with `hf jobs logs <job_id>` instead of `-f` streaming.
-- Same CPU-bound-stepping caveat as Phase 2/Colab above applies -- pick `t4-small` over
-  `t4-medium`/`a10g-*` unless you've actually parallelized `mujoco_env.py`'s env-stepping loop
-  across cores; the extra vCPUs otherwise sit idle.
-
-**Export for deployment:**
-```
-python export_policy.py \
-  --checkpoint /content/drive/MyDrive/g1_checkpoints/asymmetric_payload_run_v2/model_499.pt \
-  --out models/g1_policy.onnx
-```
-(same 0-indexing applies -- check the checkpoint directory for the actual highest `model_<N>.pt`
-rather than assuming it matches `--iterations` exactly. For an HF Jobs run, download the
-checkpoint first -- see "Accessing bucket checkpoints" below -- then point `--checkpoint` at the
-local copy.)
-
-**Accessing bucket checkpoints (HF Jobs runs):**
-- Browser: `https://huggingface.co/buckets/<hf-username>/<bucket-name>` -- browse, preview, and
-  download files directly from the bucket's page on the Hub.
-- CLI, list what's there: `hf buckets ls <hf-username>/<bucket-name>/asymmetric_payload_run_v2`
-- CLI, download one checkpoint: `hf buckets cp hf://buckets/<hf-username>/<bucket-name>/asymmetric_payload_run_v2/model_<N>.pt ./model_<N>.pt`
-- CLI, download the whole run folder: `hf buckets sync hf://buckets/<hf-username>/<bucket-name>/asymmetric_payload_run_v2 ./checkpoints/asymmetric_payload_run_v2`
-
-## Design notes / approximations
-
-- The ZMP margin penalty (`rewards.py`) approximates the support polygon as a fixed-radius
-  circle/segment around foot contact points rather than the true convex hull.
-- Ground reaction forces exposed to the critic are per-foot normal/tangential magnitudes from
-  `mj_contactForce`, not full 3D world-frame vectors.
+Full setup (Colab/HF Jobs cloud training, headless checkpoint review, ONNX export) is in
+**[src/README.md](src/README.md)**.
