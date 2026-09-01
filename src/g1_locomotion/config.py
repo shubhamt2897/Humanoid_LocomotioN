@@ -24,7 +24,15 @@ class DomainRandCfg:
 class RewardScales:
     lin_vel_tracking: float = 1.5
     ang_vel_tracking: float = 0.75
-    contact_timing: float = 0.3
+    # asymmetric_payload_run_v6 showed this was too weak to matter: contact_timing was exactly
+    # zero for the last 1000+ iterations -- the policy learned to stand rigidly rather than ever
+    # attempt a step, since lifting a foot narrows the stable base (risking several balance
+    # penalties) for a reward that only pays out after a full, well-timed swing-and-land cycle
+    # (no partial credit for trying). Bumped toward Unitree's own "gait" weight (0.5), and added
+    # feet_clearance below (matching their separate "feet_clearance" term) to reward just lifting
+    # a foot to a reasonable height -- partial credit before a full cycle completes.
+    contact_timing: float = 0.5
+    feet_clearance: float = 1.0
     double_flight: float = -0.3
     zmp_margin: float = -0.2
     torque_penalty: float = -1.0e-5

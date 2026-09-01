@@ -194,6 +194,11 @@ def parse_args() -> argparse.Namespace:
         "attempt (with a fixed command) for the full --duration_s, including lying there if it falls.",
     )
     parser.add_argument("--record", action="store_true", help="Enable the R-key video-capture toggle.")
+    parser.add_argument(
+        "--auto_record", action="store_true",
+        help="With --record, start capturing immediately instead of waiting for an R keypress -- "
+        "still shows the live interactive viewer, just doesn't require a manual toggle.",
+    )
     parser.add_argument("--video_dir", type=str, default=os.path.join(PROJECT_ROOT, "media"))
     parser.add_argument(
         "--no_arrows", action="store_true",
@@ -273,7 +278,10 @@ def main() -> None:
         recorder = VideoRecorder(
             model, args.video_dir, tag, fps=1.0 / env_cfg.control_dt, track_body_id=env.sim.pelvis_body_id
         )
-        print(f"[record] press R in the viewer window to start/stop capturing a clip to {args.video_dir}")
+        if args.auto_record:
+            recorder.toggle(data)
+        else:
+            print(f"[record] press R in the viewer window to start/stop capturing a clip to {args.video_dir}")
 
     if not args.no_arrows:
         print("[arrows] green = target velocity, orange = actual velocity")

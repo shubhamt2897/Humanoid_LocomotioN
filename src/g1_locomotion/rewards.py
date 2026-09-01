@@ -85,6 +85,22 @@ def contact_timing(feet_air_time: np.ndarray, new_contact: np.ndarray) -> np.nda
     return np.clip(reward, 0.0, None)
 
 
+FOOT_CLEARANCE_TARGET = 0.08  # m, target swing-foot height above (flat) ground
+FOOT_CLEARANCE_STD = 0.05  # m, how tightly height must match the target to earn reward
+
+
+def foot_clearance(foot_pos: np.ndarray, foot_contact: np.ndarray) -> np.ndarray:
+    """Rewards a lifted (non-contact) foot for reaching a reasonable swing height, whether or not
+    it completes a full step -- gives partial credit for *attempting* to lift a foot, unlike
+    contact_timing which only pays out after an entire well-timed swing-and-land cycle finishes.
+    Assumes flat ground (world z=0); would need a ground-height offset if terrain is re-enabled.
+    """
+    height = foot_pos[..., 2]
+    reward = np.exp(-((height - FOOT_CLEARANCE_TARGET) ** 2) / (2 * FOOT_CLEARANCE_STD**2))
+    reward = np.where(foot_contact, 0.0, reward)
+    return np.sum(reward, axis=-1)
+
+
 def double_flight_penalty(foot_contact: np.ndarray) -> np.ndarray:
     """1.0 whenever both feet are simultaneously airborne (unstable jumping/shuffling)."""
     return (~foot_contact.any(axis=-1)).astype(np.float64)
@@ -145,6 +161,7 @@ def compute_reward(
         "lin_vel_tracking": scales.lin_vel_tracking * lin_vel_tracking(state, commands),
         "ang_vel_tracking": scales.ang_vel_tracking * ang_vel_tracking(state, commands),
         "contact_timing": scales.contact_timing * contact_timing(feet_air_time, new_contact),
+        "feet_clearance": scales.feet_clearance * foot_clearance(state["foot_pos"], state["foot_contact"]),
         "double_flight": scales.double_flight * double_flight_penalty(state["foot_contact"]),
         "zmp_margin": scales.zmp_margin * zmp_margin_violation(state),
         "torque_penalty": scales.torque_penalty * torque_penalty(state["joint_torque"]),

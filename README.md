@@ -1,16 +1,34 @@
 # Robust Humanoid Locomotion (Unitree G1)
 
+## Current status (2026-09-01)
+
+**Not walking yet.** This project's end goal is a policy that's robust to pushes, payload shifts,
+and rough terrain -- but right now it's still at the earlier, more basic milestone: **learning to
+stand and take a single step from scratch, on flat ground.** Domain randomization for payload
+mass/CoM and pushes is implemented and already active during training (see below), but until
+basic flat-ground standing/stepping actually works, none of that robustness can be meaningfully
+evaluated -- there's no point testing "can it recover from a push" before it can stand at all.
+`asymmetric_payload_run_v6` (2500 iterations): stood with a natural posture and survived longer
+than earlier attempts, but never attempted to lift a foot (`contact_timing` reward was exactly
+zero in the final iterations) -- it just stood rigidly until it toppled. Fix applied for
+`asymmetric_payload_run_v7` (running now): strengthened `contact_timing` and added a new
+`feet_clearance` reward that pays out for just lifting a foot, not only a full completed step
+(see "Reward function" below). Full run-by-run diagnostic history is in `PROGRESS.md` (a local
+working log, gitignored -- not included in this repository's git history).
+
 ## What this is
 
-A walking policy for the Unitree G1 humanoid, trained in MuJoCo with PPO, whose whole point is
-**robustness the policy has to earn through its own senses** -- not a vanilla "walk forward on
-flat ground" controller. During training the robot gets hit with random pushes, carries random
-extra payload mass shifted around its torso, and (eventually) walks on procedurally bumpy
-terrain. It never gets to see any of that directly. All it has at deployment time is
-proprioception -- joint angles, joint velocities, an IMU, and its own recent actions -- and it
-has to *infer* what's throwing it off balance from how its own joints react, the same way the
-real hardware would have to. See [Project Specification.md](Project%20Specification.md) for the
-full design brief this implementation follows.
+A walking policy for the Unitree G1 humanoid, trained in MuJoCo with PPO. The design intent --
+not yet a demonstrated result -- is **robustness the policy has to earn through its own senses**,
+not a vanilla "walk forward on flat ground" controller: during training the robot gets hit with
+random pushes and carries random extra payload mass shifted around its torso, and (eventually,
+once flat-ground walking itself works) will walk on procedurally bumpy terrain. It never gets to
+see any of that directly. All it has at deployment time is proprioception -- joint angles, joint
+velocities, an IMU, and its own recent actions -- and it has to *infer* what's throwing it off
+balance from how its own joints react, the same way the real hardware would have to. (A longer
+design brief this implementation was originally planned against exists locally as
+`Project Specification.md`, but it's a personal working doc, gitignored, and not part of this
+repository -- treat this README as the source of truth for what's actually implemented.)
 
 ## The core idea: asymmetric actor-critic
 
@@ -40,7 +58,8 @@ idea, which get scaled and summed into a single number PPO optimizes. All of the
 |---|---:|---|
 | `lin_vel_tracking` | +1.5 | Walking at the commanded speed, in the commanded direction. This is the actual goal -- everything else exists to make it achievable without falling over. |
 | `ang_vel_tracking` | +0.75 | Turning at the commanded rate. |
-| `contact_timing` | +0.3 | Rewards a foot touching down after a proper swing phase (~0.2-0.5s in the air), not an instant tap -- encourages a real walking gait over shuffling. |
+| `contact_timing` | +0.5 | Rewards a foot touching down after a proper swing phase (~0.2-0.5s in the air), not an instant tap -- encourages a real walking gait over shuffling. Raised from `0.3`: `asymmetric_payload_run_v6` showed this was exactly zero for the final 1000+ iterations -- the policy had learned to just stand rigidly rather than ever attempt a step, since lifting a foot narrows its stable base and risks several balance penalties for a reward that only paid out *after* a full, well-timed swing-and-land cycle completed (no partial credit for trying). |
+| `feet_clearance` | +1.0 | New for `v7`. Rewards a lifted (non-contact) foot for reaching a reasonable swing height (~8cm), whether or not it completes a full step -- unlike `contact_timing`, this pays out for just *attempting* to lift a foot. Matches Unitree's own official config, which uses a separate `feet_clearance` term at this same weight alongside their `gait` term (their combined foot-related incentive is ~5x ours before this addition). Assumes flat ground (world z=0 as "foot on ground") -- would need a ground-height offset if terrain is re-enabled. |
 | `double_flight` | -0.3 | Penalizes both feet being off the ground at once -- no hopping/jumping in place of walking. Has its own dedicated scale (previously reused `contact_timing`'s weight -- a bug, fixed for `asymmetric_payload_run_v4`, since that coupled two unrelated behaviors under one tuning knob). |
 | `zmp_margin` | -0.2 | Soft penalty as the center of pressure drifts toward the edge of the foot/feet currently in contact -- a cheap approximation of "don't overbalance your stance." Grounded violations are clipped to the same `[0, 1]` range as the airborne case (fixed for `v4`) so a badly-balanced-but-grounded stance can never score worse than losing ground contact entirely. |
 | `torque_penalty` | -1e-5 | Penalizes `Σ torque²` across all 29 joints -- energy efficiency, and keeps the policy from relying on violent, hardware-damaging corrections. |
@@ -49,7 +68,7 @@ idea, which get scaled and summed into a single number PPO optimizes. All of the
 | `base_height` | -10.0 | Penalizes the pelvis straying from its normal standing height -- keeps posture close to "standing normally" instead of gaming other rewards by crouching or launching upward. |
 | `lin_vel_z` | -2.0 | Penalizes vertical bounce/bob in the pelvis. A good gait keeps torso height roughly steady. |
 | `ang_vel_xy` | -0.05 | Penalizes roll/pitch *rotation rate* -- catches the robot actively tipping over as it's happening, complementing `orientation`'s "already tilted" check. |
-| `alive_bonus` | +5.0 | A flat reward every step the episode hasn't ended. Raised from an original `0.1`: at that scale it was too small relative to the stability penalties below to give PPO much incentive to fight for extra survival time (`asymmetric_payload_run_v2` plateaued at ~6% of the max episode length and never improved past iteration ~1000). `5.0` matches what a comparable open-source G1/PPO/`rsl_rl` policy used to learn stable standing: https://huggingface.co/hardware-pathon-ai/unitree-g1-phase1-locomotion. Caution: at this scale it now dominates the per-step reward total (see "PPO training-stability fixes" below) -- something to watch, not necessarily something already wrong. |
+| `alive_bonus` | +0.15 | A flat reward every step the episode hasn't ended. History: started at `0.1` (too small -- `asymmetric_payload_run_v2` plateaued at ~6% of max episode length), raised to `5.0` for `v3`-`v5` based on a different open-source G1 policy (https://huggingface.co/hardware-pathon-ai/unitree-g1-phase1-locomotion) -- but that repo is a frozen-arms, standing-only task, not velocity-tracking walking. At `5.0` it ended up dominating the per-step reward over the actual tracking terms. Checked against Unitree's own *official* G1 velocity-locomotion config instead (same robot, same task) -- their value is `0.15` -- and switched to that for `v6` onward: https://github.com/unitreerobotics/unitree_rl_lab/blob/main/source/unitree_rl_lab/unitree_rl_lab/tasks/locomotion/robots/g1/29dof/velocity_env_cfg.py |
 
 **Why the last four exist:** early versions of this reward function had no continuous "stay
 upright" signal at all -- only the flat `alive_bonus` (which doesn't care *how* upright the robot
@@ -83,10 +102,21 @@ gradient outside its bounds -- so the first optimizer step that nudged the raw p
 `1.0` froze it there for the rest of training (`Policy/mean_std` was bit-for-bit `1.0000` for
 900+ consecutive iterations). `asymmetric_payload_run_v5` widened the range to `[0.1, 1.5]` so
 `init_std` has genuine room on both sides -- confirmed via a 1000-iteration smoke test that `std`
-now moves smoothly instead of freezing, though it's still climbing (not yet plateaued) at that
-point; whether `[0.1, 1.5]` alone prevents the later-run pathology, or `entropy_coef` (currently
-`0.01`) also needs lowering, is still an open question -- see `PROGRESS.md` for the full
-run-by-run diagnostic history.
+now moves smoothly instead of freezing, though it was still climbing (not yet plateaued) at that
+point, same shape as `v3`'s original climb.
+
+That last detail turned out to matter: Unitree's own official G1 PPO config
+(`unitree_rl_lab`) uses the *same* `entropy_coef=0.01` we do, without (apparently) this runaway
+-- so `entropy_coef` itself is probably not the bug. The more likely explanation, found by
+comparing our full reward table against theirs (see `alive_bonus` above): with `alive_bonus=5.0`
+dominating the per-step reward, there's little cost to noisy/imprecise actions to counteract
+`entropy_coef`'s upward pressure on `std`. `asymmetric_payload_run_v6` rebalanced `alive_bonus`
+down to Unitree's own `0.15` as the more targeted fix, and it worked for what it targeted:
+`lin_vel_tracking`/`ang_vel_tracking` improved faster and further than in any earlier run, and
+standing posture visibly relaxed (arms hang naturally instead of a stiff braced stance). `std`
+and entropy are *still* climbing, unresolved, in `v6` too -- so `[0.1, 1.5]` alone isn't the full
+fix either; this remains an open thread, not blocking progress so far but worth revisiting.
+See `PROGRESS.md` (local, gitignored working log) for the full run-by-run diagnostic history.
 
 Termination itself is separate from all of the above: an episode ends early if the pelvis drops
 below 0.5m or `projected_gravity`'s vertical component exceeds 0.6 (i.e. the robot has actually
