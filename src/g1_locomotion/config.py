@@ -51,7 +51,14 @@ class RewardScales:
     # even with entropy_coef=0.01 matching Unitree's own value exactly: with alive_bonus this
     # dominant, there's little reward cost to noisy/imprecise actions to counteract entropy_coef's
     # upward pressure. Set to Unitree's own value for asymmetric_payload_run_v6.
-    alive_bonus: float = 0.15
+    # v6/v7 (both at 0.15) plateaued at only ~5.5-6.4% max episode length -- worse than v2's own
+    # 0.1 result -- once contact_timing/feet_clearance were also added as competing per-step terms
+    # (see PROGRESS.md's asymmetric_payload_run_v7 analysis): with alive_bonus this small, there's
+    # too little reward gradient toward simply not falling before those other terms can pay out.
+    # Bumped to 1.0 for asymmetric_payload_run_v8 -- comparable in magnitude to feet_clearance
+    # (1.0) and lin_vel_tracking (1.5) rather than either dominating (5.0 did) or being swamped
+    # (0.15 was) by them.
+    alive_bonus: float = 1.0
     # Stability terms below match Unitree's official G1 RL config (see rewards.py for the
     # per-term explanation of what each one physically means for the robot):
     # https://github.com/unitreerobotics/unitree_rl_gym/blob/main/legged_gym/envs/g1/g1_config.py
