@@ -55,10 +55,15 @@ class RewardScales:
     # 0.1 result -- once contact_timing/feet_clearance were also added as competing per-step terms
     # (see PROGRESS.md's asymmetric_payload_run_v7 analysis): with alive_bonus this small, there's
     # too little reward gradient toward simply not falling before those other terms can pay out.
-    # Bumped to 1.0 for asymmetric_payload_run_v8 -- comparable in magnitude to feet_clearance
-    # (1.0) and lin_vel_tracking (1.5) rather than either dominating (5.0 did) or being swamped
-    # (0.15 was) by them.
-    alive_bonus: float = 1.0
+    # Bumped to 1.0 for asymmetric_payload_run_v8_smoke -- comparable in magnitude to
+    # feet_clearance (1.0) and lin_vel_tracking (1.5) rather than either dominating (5.0 did) or
+    # being swamped (0.15 was) by them. Killed early: plateaued hard at ~66/1000 step episodes
+    # (contact_timing pinned at ~0, confirmed visually in play.py -- the policy locked into
+    # standing perfectly rigid, "freezing" its way to alive_bonus rather than ever stepping, then
+    # slowly toppling once instability accumulates) for 500+ iterations with zero further
+    # improvement -- alive_bonus at 42% of per-step reward (vs 6.9% in v7) was still enough to
+    # make "don't move" the reward-maximizing strategy. Trying 0.5 next.
+    alive_bonus: float = 0.5
     # Stability terms below match Unitree's official G1 RL config (see rewards.py for the
     # per-term explanation of what each one physically means for the robot):
     # https://github.com/unitreerobotics/unitree_rl_gym/blob/main/legged_gym/envs/g1/g1_config.py
