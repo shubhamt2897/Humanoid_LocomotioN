@@ -110,7 +110,11 @@ from .mujoco_env import CONTACT_FORCE_THRESHOLD
 # ones (this model's pelvis mesh has 18k vertices and the torso 22k -- MJX would have to convexify
 # and pair them every step); the shoulder cylinders are self-collision only and equally pointless
 # once the meshes are gone.
-_DISABLED_COLLISION_TYPES = (mujoco.mjtGeom.mjGEOM_MESH, mujoco.mjtGeom.mjGEOM_CYLINDER)
+# Stored as plain ints, and compared against int(geom_type). Do NOT compare the raw numpy value
+# against the mjtGeom enum members directly: that silently matched NOTHING on the training
+# container (mujoco 3.12.0 there too), disabling 0 geoms and leaving all 38 collidable, while
+# working locally. int-vs-int has no such ambiguity across mujoco/numpy versions.
+_DISABLED_COLLISION_TYPES = (int(mujoco.mjtGeom.mjGEOM_MESH), int(mujoco.mjtGeom.mjGEOM_CYLINDER))
 
 
 def simplify_collisions(model: mujoco.MjModel) -> int:
@@ -126,7 +130,7 @@ def simplify_collisions(model: mujoco.MjModel) -> int:
     """
     disabled = 0
     for g in range(model.ngeom):
-        if model.geom_type[g] in _DISABLED_COLLISION_TYPES and (
+        if int(model.geom_type[g]) in _DISABLED_COLLISION_TYPES and (
             model.geom_contype[g] or model.geom_conaffinity[g]
         ):
             model.geom_contype[g] = 0
@@ -136,13 +140,21 @@ def simplify_collisions(model: mujoco.MjModel) -> int:
     survivors = [
         g for g in range(model.ngeom) if model.geom_contype[g] or model.geom_conaffinity[g]
     ]
-    spheres = [g for g in survivors if model.geom_type[g] == mujoco.mjtGeom.mjGEOM_SPHERE]
-    planes = [g for g in survivors if model.geom_type[g] == mujoco.mjtGeom.mjGEOM_PLANE]
+    spheres = [g for g in survivors if int(model.geom_type[g]) == int(mujoco.mjtGeom.mjGEOM_SPHERE)]
+    planes = [g for g in survivors if int(model.geom_type[g]) == int(mujoco.mjtGeom.mjGEOM_PLANE)]
     if len(spheres) != 8 or len(planes) != 1 or len(survivors) != 9:
+        from collections import Counter
+
+        breakdown = Counter(int(model.geom_type[g]) for g in survivors)
         raise RuntimeError(
             "simplify_collisions expected exactly 8 foot spheres + 1 ground plane to remain "
             f"collidable, got {len(spheres)} spheres / {len(planes)} planes / {len(survivors)} "
-            "total. The robot MJCF's foot collision geometry has changed -- re-check which geoms "
+            f"total after disabling {disabled} geoms.\n"
+            f"  surviving geom_type -> count: {dict(breakdown)}\n"
+            f"  types this disables: {_DISABLED_COLLISION_TYPES} "
+            f"(MESH={int(mujoco.mjtGeom.mjGEOM_MESH)}, CYLINDER={int(mujoco.mjtGeom.mjGEOM_CYLINDER)})\n"
+            "If `disabled` is 0, the type comparison is not matching in this mujoco build. "
+            "Otherwise the robot MJCF's foot collision geometry has changed -- re-check which geoms "
             "carry ground contact before using this backend."
         )
     return disabled
