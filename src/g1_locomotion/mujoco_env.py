@@ -21,6 +21,12 @@ from .math_utils import quat_rotate_inverse
 from .terrain import apply_terrain_to_model, flatten_terrain, terrain_height_at_center
 
 
+# Normal force (N) a foot must carry before it counts as being in contact. Matches
+# unitree_rl_gym's `> 1.` threshold; see the use site in gather_state for why a boolean
+# any-contact test was wrong.
+CONTACT_FORCE_THRESHOLD = 1.0
+
+
 def _sensor_adr(model: mujoco.MjModel, name: str) -> int:
     sid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SENSOR, name)
     if sid < 0:
@@ -86,6 +92,22 @@ class G1MultiEnv:
             geom_ids = geom_ids[base.geom_contype[geom_ids] != 0]
             self.foot_geom_ids.append(geom_ids)
 
+        # Collision geoms belonging to the pelvis, for the pelvis-contact termination (Unitree's
+        # terminate_after_contacts_on=["pelvis"]).
+        start, num = base.body_geomadr[self.pelvis_body_id], base.body_geomnum[self.pelvis_body_id]
+        pelvis_geoms = np.arange(start, start + num)
+        self.pelvis_geom_ids = pelvis_geoms[base.geom_contype[pelvis_geoms] != 0]
+
+        # Soft joint limits for the dof_pos_limits penalty: the middle `soft_dof_pos_limit` fraction
+        # of each joint's MJCF range, centered on the range midpoint (legged_gym's convention).
+        jnt_ids = np.array(
+            [mujoco.mj_name2id(base, mujoco.mjtObj.mjOBJ_JOINT, n) for n in robot.JOINT_NAMES]
+        )
+        lower, upper = base.jnt_range[jnt_ids, 0], base.jnt_range[jnt_ids, 1]
+        mid, half = 0.5 * (lower + upper), 0.5 * (upper - lower)
+        self.soft_dof_lower = mid - half * cfg.soft_dof_pos_limit
+        self.soft_dof_upper = mid + half * cfg.soft_dof_pos_limit
+
         self.default_torso_mass = float(base.body_mass[self.torso_body_id])
         self.default_torso_ipos = base.body_ipos[self.torso_body_id].copy()
 
@@ -127,8 +149,11 @@ class G1MultiEnv:
             self.floor_friction[i] = friction
 
             mujoco.mj_resetData(model, data)
+            # Spawn slightly above the nominal standing height so the joint-noise-perturbed legs
+            # start clear of the floor and settle into contact, rather than starting embedded in it.
+            # See robot.SPAWN_HEIGHT_CLEARANCE for the measured penetration this avoids.
             data.qpos[self.free_qpos_adr : self.free_qpos_adr + 3] = [
-                0.0, 0.0, ground_z + robot.STANDING_BASE_HEIGHT
+                0.0, 0.0, ground_z + robot.STANDING_BASE_HEIGHT + robot.SPAWN_HEIGHT_CLEARANCE
             ]
             yaw = self.rng.uniform(*dr.init_yaw_range)
             data.qpos[self.free_qpos_adr + 3 : self.free_qpos_adr + 7] = [
@@ -187,15 +212,34 @@ class G1MultiEnv:
             [np.stack([self.datas[i].xpos[bid] for bid in self.foot_body_ids]) for i in range(self.num_envs)]
         )
 
+        # World-frame linear velocity of each foot body, for the contact_no_vel (anti-scuff) term.
+        foot_lin_vel = np.zeros((self.num_envs, 2, 3))
+        vel6 = np.zeros(6)
+        for i in range(self.num_envs):
+            for foot_idx, body_id in enumerate(self.foot_body_ids):
+                mujoco.mj_objectVelocity(
+                    self.models[i], self.datas[i], mujoco.mjtObj.mjOBJ_BODY, body_id, vel6, 0
+                )
+                foot_lin_vel[i, foot_idx] = vel6[3:]
+
         foot_normal_force = np.zeros((self.num_envs, 2))
         foot_tangential_force = np.zeros((self.num_envs, 2))
         foot_contact = np.zeros((self.num_envs, 2), dtype=bool)
+        pelvis_contact = np.zeros(self.num_envs, dtype=bool)
         cop_xy = np.zeros((self.num_envs, 2))
 
         for i in range(self.num_envs):
             data = self.datas[i]
             weighted_pos = np.zeros(3)
             total_normal = 0.0
+            for c in range(data.ncon):
+                con = data.contact[c]
+                if con.geom1 != self.floor_geom_id and con.geom2 != self.floor_geom_id:
+                    continue
+                other = con.geom2 if con.geom1 == self.floor_geom_id else con.geom1
+                if other in self.pelvis_geom_ids:
+                    pelvis_contact[i] = True
+                    break
             for foot_idx, geom_ids in enumerate(self.foot_geom_ids):
                 for c in range(data.ncon):
                     con = data.contact[c]
@@ -210,11 +254,18 @@ class G1MultiEnv:
                     tangential = float(np.hypot(force6[1], force6[2]))
                     foot_normal_force[i, foot_idx] += normal
                     foot_tangential_force[i, foot_idx] += tangential
-                    foot_contact[i, foot_idx] = True
                     weighted_pos += np.array(con.pos) * normal
                     total_normal += normal
             if total_normal > 1e-6:
                 cop_xy[i] = (weighted_pos / total_normal)[:2]
+
+        # A foot counts as planted only once it carries real load, matching unitree_rl_gym, whose
+        # contact tests are all `contact_forces[..., 2] > 1.` (newtons). Previously this was set
+        # from MuJoCo's boolean contact detection, so any grazing touch -- a toe brushing the floor
+        # mid-swing, a foot resting with ~0 N during a fall -- counted as full stance. That made the
+        # clocked `contact` reward pay out for scuffing and silenced feet_swing_height exactly when
+        # a dragging foot should have been charged for it.
+        foot_contact = foot_normal_force > CONTACT_FORCE_THRESHOLD
 
         return {
             "joint_pos": joint_pos,
@@ -228,6 +279,8 @@ class G1MultiEnv:
             "foot_normal_force": foot_normal_force,
             "foot_tangential_force": foot_tangential_force,
             "foot_contact": foot_contact,
+            "foot_lin_vel": foot_lin_vel,
+            "pelvis_contact": pelvis_contact,
             "cop_xy": cop_xy,
             "foot_pos": foot_pos,
             "payload_mass": self.payload_mass.copy(),

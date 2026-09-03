@@ -15,6 +15,9 @@ dist/
 .vscode/
 .claude/
 
+# Local secrets/credentials -- never commit
+.credentials.local.md
+
 # OS junk
 .DS_Store
 Thumbs.db
