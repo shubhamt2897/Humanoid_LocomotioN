@@ -42,12 +42,10 @@ class G1VecEnv:
             raise ValueError(f"backend must be 'mujoco' or 'mjx', got {backend!r}")
         self.backend = backend
         self.cfg = cfg
-        # rewards.REWARD_DT is applied to every reward weight and is hard-coded so the scaling
-        # lives in one place; if control_dt is ever retuned, that constant has to move with it.
-        assert abs(rewards.REWARD_DT - cfg.control_dt) < 1e-12, (
-            f"rewards.REWARD_DT ({rewards.REWARD_DT}) must equal EnvCfg.control_dt "
-            f"({cfg.control_dt}) -- reward weights are per-second rates scaled by the control step."
-        )
+        # This assertion previously required REWARD_DT == control_dt, which enforced the v11 reward
+        # scaling that collapsed the value loss (see rewards.REWARD_DT). REWARD_DT is now a plain
+        # multiplier, 1.0 = off, and is not tied to control_dt at all.
+        assert rewards.REWARD_DT > 0.0, "rewards.REWARD_DT must be positive"
         if backend == "mjx":
             # Imported lazily: mjx_env raises ImportError without jax/mujoco-mjx, and the MuJoCo
             # path must keep working in an environment that has neither.

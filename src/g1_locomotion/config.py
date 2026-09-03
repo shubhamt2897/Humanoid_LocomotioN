@@ -35,8 +35,32 @@ class RewardScales:
         is not a confound while the cadence/clearance terms are being evaluated)
     """
 
+    # =========================================================================================
+    # v12: REVERTED TO v9's REWARD SCALES. The gait clock is the ONLY intended change.
+    #
+    # Why. Ranked by locomotion quality rather than survival (16 envs x 2000 steps each):
+    #
+    #   run   ep_len   tilt    vel err   both feet down   contact flips/s
+    #   v3     110.1   12.7      0.752       82.6%             6.74
+    #   v7      55.5   18.6      0.677       23.7%             9.33
+    #   v9      65.4   15.0     [0.657]      34.4%            17.25
+    #   rand    40.1   11.9      0.903       49.4%            18.52
+    #
+    # v3 has by far the longest episodes and is the WORST policy: 82.6% double support and
+    # velocity tracking barely better than an untrained network. alive_bonus=5.0 bought a statue.
+    # v9 tracks best and is the only one that visibly strides. Episode length rewards standing
+    # still, so it must not be used alone to rank these.
+    #
+    # Every reward change after v9 made things worse -- v10 (43 peak, suicide policy) and v11
+    # (18, no signal). Both were justified by matching published reference configs. Those configs
+    # are tuned as a PACKAGE against Isaac Gym's model, actuators and ~1B-timestep budget; lifting
+    # individual weights out of one and into a different sim, a 29-DoF arm-actuated robot and a
+    # ~12M-timestep budget does not carry the tuning with them. So: back to the values with
+    # evidence behind them, and change exactly one thing.
+    # =========================================================================================
+
     # --- velocity tracking (the actual task) -------------------------------------------------
-    # Unitree uses 1.0 / 0.5; we run 1.5 / 0.75 -- same 2:1 ratio, scaled up.
+    # Unitree uses 1.0 / 0.5; we run 1.5 / 0.75 -- same 2:1 ratio, scaled up. Unchanged since v9.
     lin_vel_tracking: float = 1.5
     ang_vel_tracking: float = 0.75
 
@@ -52,23 +76,26 @@ class RewardScales:
     # 0.5 to 0.18: it fires far more often (every step, not once per completed cycle), so the
     # per-step contribution is comparable despite the smaller scale.
     #
-    # v11: 0.18 -> 0.5. 0.18 came from unitree_rl_gym, which is the 12-DoF G1 build. The direct
-    # reference for OUR robot is unitree_rl_lab's 29dof config, whose equivalent `gait` term
-    # (func=mdp.feet_gait, period 0.8, offset [0.0, 0.5], threshold 0.55 -- same clock we run)
-    # is weighted 0.5.
-    contact: float = 0.5
-    # Swing-foot clearance, as a POSITIVE reward at target 0.1 m.
+    # *** THE ONE INTENDED CHANGE IN v12 ***
     #
-    # v11 revert. v10 inverted this into a -20.0 penalty (unitree_rl_gym's `feet_swing_height`),
-    # on the reasoning that a reward can be forfeited by a policy that would rather stand still.
-    # That was the wrong reference: unitree_rl_gym is the 12-DoF build. unitree_rl_lab's 29dof
-    # config -- our exact robot -- keeps this a positive reward:
-    #     feet_clearance = RewTerm(func=mdp.foot_clearance_reward, weight=1.0,
-    #                              params={"target_height": 0.1, ...})
-    # So: back to +1.0, with the target moved 0.08 -> 0.10 to match. The v10 penalty form is not
-    # vindicated by the run either -- feet_swing_height went -9.20 -> -0.08 while episodes were
-    # only 0.47 s long, i.e. it went quiet because there was no swing phase, not because the drag
-    # was fixed. See FOOT_CLEARANCE_TARGET in rewards.py for what the height is measured on.
+    # Clocked contact reward, replacing v9's air-time `contact_timing` (which was also 0.5, so the
+    # weight is unchanged -- only the criterion differs). v9's version paid out for a foot that had
+    # been airborne a while, with no schedule saying WHEN a swing was due. The result is visible in
+    # the measurement above: v9 runs 17.25 contact changes/s against the ~2.5/s a real 0.8 s gait
+    # implies -- 7x too fast. That is foot chatter, not stepping, and it is why v9 strides but
+    # scuffs. A fixed alternating clock is the standard fix and is what both Unitree repos use
+    # (unitree_rl_lab's `gait` term is weighted 0.5 at period 0.8 / offset 0.5 / duty 0.55 -- the
+    # same clock this implements).
+    #
+    # This has never actually been tested. v10 carried it, but v10's episodes averaged 0.42 s
+    # against a 0.8 s gait period, so the policy never observed a full cycle and `reward/contact`
+    # never escaped its 0.18/step chance level. v9 survives ~1.31 s, comfortably longer than one
+    # period, so the clock can engage for the first time here.
+    contact: float = 0.5
+    # Swing-foot clearance, POSITIVE reward -- v9's exact form and weight (target 0.08, see
+    # FOOT_CLEARANCE_TARGET in rewards.py). v10 inverted this into a -20.0 penalty taken from the
+    # 12-DoF unitree_rl_gym; unitree_rl_lab's 29dof config keeps it a +1.0 reward, and v9's own
+    # result -- the only policy that visibly strides -- was produced with the reward form.
     feet_clearance: float = 1.0
     # Both feet simultaneously airborne. Project-specific (Unitree has no equivalent -- the clock
     # covers it for them). At stance duty 0.55 with a 0.5 phase offset the clock schedules ~10%
@@ -83,29 +110,37 @@ class RewardScales:
     # edge", so it does not fight dynamic walking.
     zmp_margin: float = -0.2
     torque_penalty: float = -1.0e-5
-    # v11: -0.01 -> -0.05. -0.01 was unitree_rl_gym (12-DoF); unitree_rl_lab's 29dof config uses
-    # `action_rate = RewTerm(func=mdp.action_rate_l2, weight=-0.05)`.
-    action_rate_penalty: float = -0.05
-    # Mechanical power. unitree_rl_lab 29dof only: `energy = RewTerm(func=mdp.energy, weight=-2e-5)`.
-    # No unitree_rl_gym counterpart. Charged as sum |torque * joint_vel| over all 29 joints.
-    energy: float = -2.0e-5
+    action_rate_penalty: float = -0.01  # v9 value; v11's -0.05 reverted with the rest
+
+    # --- v10/v11 ADDITIONS, ALL DISABLED FOR v12 ---------------------------------------------
+    # Kept at 0.0 rather than deleted: each is implemented and logged, so re-enabling one is a
+    # one-line change, and per-term logging still shows what it WOULD have charged (terms are
+    # computed then multiplied by their weight, so a 0.0 weight logs 0.0 -- flip the weight to see
+    # it). These went in as a block in v10 alongside the reward-scale changes that caused the
+    # suicide policy, so none of them has ever been evaluated on its own. Re-enable one at a time,
+    # each against the v12 baseline, and keep only what beats it.
+    #
+    # My prior on which are worth trying first, for whenever that happens: hip_pos (Unitree state
+    # its purpose is preventing the splayed-leg gait, which is a real failure mode here) and
+    # contact_no_vel (anti-scuff, and v9's chatter is exactly a scuffing problem).
+    energy: float = 0.0
 
     # --- joint regularization (all NEW in this change set) -----------------------------------
     # Hip roll/yaw pinned near default. Unitree's `hip_pos`, their stated purpose being to prevent
     # the splayed-leg gait RL converges on. Hip pitch is deliberately NOT included.
-    hip_pos: float = -1.0
+    hip_pos: float = 0.0
     # Soft joint-limit violation, Unitree's `dof_pos_limits` at soft_dof_pos_limit=0.9 (see
     # EnvCfg.soft_dof_pos_limit). Requires the crouched default pose to have landed first -- at the
     # old all-zero default the knee sat outside its own soft lower bound (see robot.py).
-    dof_pos_limits: float = -5.0
+    dof_pos_limits: float = 0.0
     # Joint acceleration / velocity smoothness, Unitree's values. NOTE: Unitree applies these over
     # 12 leg joints, we apply over all 29, so the same weight accumulates ~2.4x more sum-of-squares
     # here. Flagged as a retune candidate if the negatives turn out to dominate.
-    dof_acc: float = -2.5e-7
-    dof_vel: float = -1.0e-3
+    dof_acc: float = 0.0
+    dof_vel: float = 0.0
     # Foot moving while in contact -- the anti-slip / anti-scuff term. Unitree's `contact_no_vel`.
     # Mostly a sim2real term, but it also directly discourages the foot-drag behavior.
-    contact_no_vel: float = -0.2
+    contact_no_vel: float = 0.0
 
     # --- upper-body regularization (NEW, project-specific) -----------------------------------
     # No Unitree counterpart exists: unitree_rl_gym's G1 is the 12-DoF build with the arms FIXED in
@@ -130,8 +165,8 @@ class RewardScales:
     #                                      joint_names=[".*_shoulder_.*", ".*_elbow_joint", ".*_wrist_.*"])
     # Waist -1.0 was already correct by coincidence. Arms move -0.25 -> -0.1 to match.
     # Note their form is joint_deviation_l1 (absolute), ours is squared; see rewards.py.
-    waist_deviation: float = -1.0
-    arm_deviation: float = -0.1
+    waist_deviation: float = 0.0
+    arm_deviation: float = 0.0
     # History: asymmetric_payload_run_v2 (5000 iters) plateaued at ~64/1000 step episodes (6.4%
     # of max) with alive_bonus=0.1 -- too small relative to the penalty terms to give PPO much
     # incentive to fight for extra survival time. Bumped to 5.0 for v3/v4/v5 based on a comparable
@@ -175,7 +210,7 @@ class RewardScales:
     # `flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-5.0)`. Same quantity
     # (squared xy of projected gravity), 5x the weight. This is also the term most directly aimed
     # at v10's failure: terminations were 100% orientation, i.e. forward pitch.
-    orientation: float = -5.0
+    orientation: float = -1.0  # v9 value; v11 raised it to -5.0 (unitree_rl_lab). Reverted.
     base_height: float = -10.0
     lin_vel_z: float = -2.0
     ang_vel_xy: float = -0.05
@@ -259,7 +294,7 @@ class EnvCfg:
     # gradient does not have to come from the clamped random regime -- it appears as soon as any
     # rollout stumbles into a state scoring above 0, and from there the ratchet only goes one way.
     # Bootstrapping out of an all-zero region is a slow start; a suicide gradient is a wrong answer.
-    only_positive_rewards: bool = True
+    only_positive_rewards: bool = False
 
     command_lin_vel_range: tuple[float, float] = (-1.0, 1.0)
     command_ang_vel_range: tuple[float, float] = (-1.0, 1.0)

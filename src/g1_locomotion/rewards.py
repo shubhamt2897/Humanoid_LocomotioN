@@ -20,11 +20,33 @@ from .robot import STANDING_BASE_HEIGHT
 
 SUPPORT_RADIUS = 0.12  # m, approximate single-foot support margin for the ZMP penalty
 
-# Control timestep every reward weight is multiplied by, because the weights are per-second rates.
-# Mirrors legged_gym's `self.reward_scales[key] *= self.dt` and IsaacLab's `* env.step_dt`.
-# Kept as a module constant rather than read from EnvCfg so the scaling is applied in exactly one
-# place; must stay equal to EnvCfg.control_dt (asserted in G1VecEnv.__init__).
-REWARD_DT = 0.02
+# Global multiplier on every reward weight. 1.0 = OFF, which is v9's behaviour and the setting
+# with evidence behind it.
+#
+# v11 set this to control_dt (0.02) to mirror legged_gym's `self.reward_scales[key] *= self.dt`
+# and IsaacLab's `* env.step_dt`. That is a faithful description of what those frameworks do, and
+# it still broke training. Measured across runs:
+#
+#   run              reward median   Loss/value median   Policy/mean_std end
+#   v3                    399.4            438.19              2.309
+#   v7                     23.9             23.01              1.424
+#   v9                     59.9             26.82              1.443
+#   v10                   -44.6             39.33              1.181
+#   v11 (dt + clamp)        0.0000           0.0000            1.500  <- std_range ceiling
+#
+# Why it breaks, and why "PPO normalizes advantages so a uniform scale is harmless" (my own earlier
+# reasoning) is wrong: advantage normalization makes the SURROGATE loss scale-invariant, but the
+# value loss goes as (returns - values)^2, so a 0.02x reward scale shrinks it ~2500x. Meanwhile
+# entropy_coef (0.01) is an absolute term that does not scale at all. The total loss therefore
+# flips from value-dominated to entropy-dominated, and the policy maximizes entropy -- straight to
+# the std_range ceiling, exactly as observed. Every run that learned had a value loss in the tens
+# to hundreds; v11's was zero.
+#
+# The reference frameworks apply dt AND tune value_loss_coef / entropy_coef against the resulting
+# scale as a package. Porting the dt factor alone while keeping entropy_coef from a 50x-larger
+# regime is what broke it. If this is ever revisited, entropy_coef and value_loss_coef in
+# ppo_cfg.py have to move with it.
+REWARD_DT = 1.0
 
 
 def lin_vel_tracking(state: dict, commands: np.ndarray) -> np.ndarray:
@@ -106,16 +128,16 @@ def clocked_contact(foot_contact: np.ndarray, expected_stance: np.ndarray) -> np
 
 # Target swing-foot height.
 #
-# v11: 0.08 -> 0.10. 0.08 came from unitree_rl_gym's _reward_feet_swing_height (12-DoF G1), which
-# uses a literal `square(feet_pos[:, :, 2] - 0.08) * ~contact`. The reference for OUR 29-DoF robot
-# is unitree_rl_lab, whose feet_clearance term passes `"target_height": 0.1`.
+# v12: back to v9's 0.08. v11 moved this to 0.10 to match unitree_rl_lab's 29dof feet_clearance
+# ("target_height": 0.1), but 0.08 is what v9 -- the only policy that visibly strides -- was
+# trained with, and this revision holds every reward value at v9's except the gait clock.
 #
 # NOTE what this is measured on: our foot_pos is the ankle_roll_link BODY ORIGIN, not the sole. On
 # this model the body origin sits 0.0350 m above the sole (measured by FK: standing on flat ground,
 # sole z = 0.0000, body origin z = 0.0348). So a foot resting flat reads 0.035, not 0, and a 0.10
 # target means ~0.065 m of TRUE sole clearance. Both references measure on the same link of the same
 # robot, so their targets should carry the same meaning, but only our offset is measured here.
-FOOT_CLEARANCE_TARGET = 0.10  # m, on the foot body origin (~0.065 m of true sole clearance)
+FOOT_CLEARANCE_TARGET = 0.08  # m, on the foot body origin (~0.045 m of true sole clearance)
 FOOT_CLEARANCE_STD = 0.05  # m, width of the exp kernel below
 
 
