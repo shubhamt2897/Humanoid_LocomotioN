@@ -70,10 +70,17 @@ def apply_terrain_to_model(model, hfield_name: str, rng: np.random.Generator, re
 
 
 def flatten_terrain(model, hfield_name: str) -> None:
-    """Zero out the named heightfield -- a flat floor, used while terrain DR is disabled."""
+    """Zero out the named heightfield -- a flat floor, used while terrain DR is disabled.
+
+    No-op if the model has no such heightfield. That is the case for assets/g1/scene_mjx.xml, whose
+    floor is a plane (MJX has no heightfield collision) -- and the MuJoCo backend must still be able
+    to load that scene so tools/check_mjx_parity.py can roll both backends out on the SAME model.
+    """
     import mujoco
 
     hfield_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_HFIELD, hfield_name)
+    if hfield_id < 0:
+        return
     nrow = int(model.hfield_nrow[hfield_id])
     ncol = int(model.hfield_ncol[hfield_id])
     adr = int(model.hfield_adr[hfield_id])
@@ -84,10 +91,15 @@ def terrain_height_at_center(model, hfield_name: str) -> float:
     """World-frame ground height directly under the hfield's local (0, 0) -- i.e. under a robot
     spawned at the geom's xy origin. Assumes the hfield geom itself has no xy/z position offset
     (true for ``assets/g1/scene_train.xml``'s "floor" geom).
+
+    Returns 0.0 if the model has no such heightfield -- scene_mjx.xml uses a plane floor at z=0,
+    which is exactly that answer. See flatten_terrain for why this path has to exist.
     """
     import mujoco
 
     hfield_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_HFIELD, hfield_name)
+    if hfield_id < 0:
+        return 0.0
     nrow = int(model.hfield_nrow[hfield_id])
     ncol = int(model.hfield_ncol[hfield_id])
     adr = int(model.hfield_adr[hfield_id])

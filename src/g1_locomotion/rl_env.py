@@ -20,7 +20,27 @@ from .mujoco_env import G1MultiEnv
 class G1VecEnv:
     """VecEnv adapter matching ``rsl_rl.env.VecEnv``'s duck-typed contract."""
 
-    def __init__(self, cfg: EnvCfg, auto_reset: bool = True):
+    def __init__(self, cfg: EnvCfg, auto_reset: bool = True, backend: str = "mujoco"):
+        """``backend`` selects the physics implementation ONLY.
+
+        Everything above the physics -- observations, actions, rewards, terminations, the gait
+        clock, domain randomization ranges, the asymmetric actor/critic split, and the PPO config --
+        is shared verbatim between the two. That is deliberate: if an MJX run behaves differently
+        from a MuJoCo one, the difference is the backend, not a silently forked reward or obs
+        definition. Both sims expose the same reset_idx/step/compute_torques/gather_state contract,
+        so this class never learns which one it is driving.
+
+        "mujoco" -- mujoco_env.G1MultiEnv. Serial Python loop over N independent MjModel/MjData
+                    pairs. Correct and well-tested, but throughput is pinned at ~874 timesteps/s
+                    regardless of num_envs, and memory is ~77 MB PER ENV (each env holds its own
+                    copy of the 185k-vertex mesh set), so 512 envs already needs 39 GB.
+        "mjx"    -- mjx_env.G1MjxEnv. One shared model, vmapped over envs on GPU. ~0.064 MB per env
+                    (1200x less), so env count stops being a memory question. Requires jax +
+                    mujoco-mjx, which the default environment does not install.
+        """
+        if backend not in ("mujoco", "mjx"):
+            raise ValueError(f"backend must be 'mujoco' or 'mjx', got {backend!r}")
+        self.backend = backend
         self.cfg = cfg
         # rewards.REWARD_DT is applied to every reward weight and is hard-coded so the scaling
         # lives in one place; if control_dt is ever retuned, that constant has to move with it.
@@ -28,7 +48,14 @@ class G1VecEnv:
             f"rewards.REWARD_DT ({rewards.REWARD_DT}) must equal EnvCfg.control_dt "
             f"({cfg.control_dt}) -- reward weights are per-second rates scaled by the control step."
         )
-        self.sim = G1MultiEnv(cfg)
+        if backend == "mjx":
+            # Imported lazily: mjx_env raises ImportError without jax/mujoco-mjx, and the MuJoCo
+            # path must keep working in an environment that has neither.
+            from .mjx_env import G1MjxEnv
+
+            self.sim = G1MjxEnv(cfg)
+        else:
+            self.sim = G1MultiEnv(cfg)
         self.num_envs = cfg.num_envs
         self.num_actions = robot.NUM_JOINTS
         self.max_episode_length = cfg.max_episode_length_steps

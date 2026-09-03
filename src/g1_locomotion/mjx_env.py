@@ -203,6 +203,16 @@ class G1MjxEnv:
             ]
             self.foot_geom_ids.append(np.array(ids))
 
+        # Soft joint limits for the dof_pos_limits reward. Computed identically to
+        # mujoco_env.G1MultiEnv so the term means exactly the same thing on both backends.
+        jnt_ids = np.array(
+            [mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, x) for x in robot.JOINT_NAMES]
+        )
+        lower, upper = m.jnt_range[jnt_ids, 0], m.jnt_range[jnt_ids, 1]
+        mid, half = 0.5 * (lower + upper), 0.5 * (upper - lower)
+        self.soft_dof_lower = mid - half * cfg.soft_dof_pos_limit
+        self.soft_dof_upper = mid + half * cfg.soft_dof_pos_limit
+
         self.default_torso_mass = float(m.body_mass[self.torso_body_id])
         self.default_torso_ipos = m.body_ipos[self.torso_body_id].copy()
 
@@ -413,6 +423,7 @@ class G1MjxEnv:
             "pelvis_contact": np.zeros(n, dtype=bool),
             "cop_xy": cop_xy,
             "foot_pos": foot_pos,
+            "foot_lin_vel": foot_lin_vel,
             "payload_mass": self.payload_mass.copy(),
             "payload_com": self.payload_com.copy(),
             "floor_friction": self.floor_friction.copy(),
