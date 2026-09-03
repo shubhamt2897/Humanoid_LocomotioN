@@ -22,6 +22,12 @@ class G1VecEnv:
 
     def __init__(self, cfg: EnvCfg, auto_reset: bool = True):
         self.cfg = cfg
+        # rewards.REWARD_DT is applied to every reward weight and is hard-coded so the scaling
+        # lives in one place; if control_dt is ever retuned, that constant has to move with it.
+        assert abs(rewards.REWARD_DT - cfg.control_dt) < 1e-12, (
+            f"rewards.REWARD_DT ({rewards.REWARD_DT}) must equal EnvCfg.control_dt "
+            f"({cfg.control_dt}) -- reward weights are per-second rates scaled by the control step."
+        )
         self.sim = G1MultiEnv(cfg)
         self.num_envs = cfg.num_envs
         self.num_actions = robot.NUM_JOINTS

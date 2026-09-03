@@ -20,6 +20,12 @@ from .robot import STANDING_BASE_HEIGHT
 
 SUPPORT_RADIUS = 0.12  # m, approximate single-foot support margin for the ZMP penalty
 
+# Control timestep every reward weight is multiplied by, because the weights are per-second rates.
+# Mirrors legged_gym's `self.reward_scales[key] *= self.dt` and IsaacLab's `* env.step_dt`.
+# Kept as a module constant rather than read from EnvCfg so the scaling is applied in exactly one
+# place; must stay equal to EnvCfg.control_dt (asserted in G1VecEnv.__init__).
+REWARD_DT = 0.02
+
 
 def lin_vel_tracking(state: dict, commands: np.ndarray) -> np.ndarray:
     """How closely the robot's horizontal velocity (in its own body frame) matches the
@@ -98,34 +104,42 @@ def clocked_contact(foot_contact: np.ndarray, expected_stance: np.ndarray) -> np
     return np.sum(foot_contact == expected_stance, axis=-1).astype(np.float64)
 
 
-# Target swing-foot height, verified against unitree_rl_gym's _reward_feet_swing_height, which uses
-# a literal 0.08 in `square(feet_pos[:, :, 2] - 0.08) * ~contact`.
+# Target swing-foot height.
 #
-# NOTE what this is measured on: like theirs, our foot_pos is the ankle_roll_link BODY ORIGIN, not
-# the sole. On this model the body origin sits 0.0350 m above the sole (measured by FK: standing on
-# flat ground, sole z = 0.0000, body origin z = 0.0348). So a foot resting flat reads 0.035, not 0,
-# and a 0.08 target means ~0.045 m of TRUE sole clearance -- a realistic walking foot lift, whereas
-# 0.08 m of actual sole clearance would be closer to a march. Unitree measures on the same link of
-# the same robot, so their 0.08 should carry the same meaning, but only our offset is measured here.
-FOOT_CLEARANCE_TARGET = 0.08  # m, on the foot body origin (~0.045 m of true sole clearance)
+# v11: 0.08 -> 0.10. 0.08 came from unitree_rl_gym's _reward_feet_swing_height (12-DoF G1), which
+# uses a literal `square(feet_pos[:, :, 2] - 0.08) * ~contact`. The reference for OUR 29-DoF robot
+# is unitree_rl_lab, whose feet_clearance term passes `"target_height": 0.1`.
+#
+# NOTE what this is measured on: our foot_pos is the ankle_roll_link BODY ORIGIN, not the sole. On
+# this model the body origin sits 0.0350 m above the sole (measured by FK: standing on flat ground,
+# sole z = 0.0000, body origin z = 0.0348). So a foot resting flat reads 0.035, not 0, and a 0.10
+# target means ~0.065 m of TRUE sole clearance. Both references measure on the same link of the same
+# robot, so their targets should carry the same meaning, but only our offset is measured here.
+FOOT_CLEARANCE_TARGET = 0.10  # m, on the foot body origin (~0.065 m of true sole clearance)
+FOOT_CLEARANCE_STD = 0.05  # m, width of the exp kernel below
 
 
-def feet_swing_height(foot_pos: np.ndarray, foot_contact: np.ndarray) -> np.ndarray:
-    """Squared error between a lifted foot's height and the target swing clearance.
+def foot_clearance(foot_pos: np.ndarray, foot_contact: np.ndarray) -> np.ndarray:
+    """Reward a lifted (non-contact) foot for being near the target swing clearance.
 
-    This is the INVERTED form of the old ``foot_clearance`` reward (+1.0, exp kernel). Same physical
-    quantity, opposite sign and Unitree's -20.0 weight. The reason for the inversion: a reward for
-    lifting can simply be declined -- a policy that drags its trailing foot forfeits it and keeps
-    everything else -- whereas a penalty is charged every step the foot is off the ground and not
-    at clearance. Foot-drag is the specific behavior this is aimed at.
+    v11 restores this to its POSITIVE form. v10 had inverted it into a -20.0 `feet_swing_height`
+    penalty, taken from unitree_rl_gym (the 12-DoF build). unitree_rl_lab's 29dof config -- our
+    exact robot -- keeps it a positive reward at weight +1.0, so the inversion was following the
+    wrong reference. The v10 run does not defend the penalty form either: feet_swing_height went
+    -9.20 -> -0.08 while episodes lasted only 0.47 s, i.e. it went quiet because there was no swing
+    phase to charge for, not because foot-drag had been solved.
 
-    Gated on *actual* contact rather than the clock's expected swing, matching Unitree: any airborne
-    foot is expected to be at clearance height, regardless of whether the clock agrees it should be
-    airborne right now. Assumes flat ground (world z=0); needs a ground-height offset if terrain is
-    re-enabled.
+    Difference from IsaacLab's `foot_clearance_reward` worth knowing: theirs additionally weights
+    the height error by tanh(foot horizontal speed), so a foot is only asked to be at clearance
+    while it is actually travelling. Ours gates on contact only, which asks a foot lifted in place
+    to reach clearance too. Closest form without importing their velocity shaping.
+
+    Gated on *actual* contact, not the clock's expected swing: any airborne foot is expected near
+    clearance regardless of what the clock says it should be doing. Assumes flat ground (world
+    z=0); needs a ground-height offset if terrain is re-enabled.
     """
-    error = (foot_pos[..., 2] - FOOT_CLEARANCE_TARGET) ** 2
-    return np.sum(np.where(foot_contact, 0.0, error), axis=-1)
+    reward = np.exp(-((foot_pos[..., 2] - FOOT_CLEARANCE_TARGET) ** 2) / (2 * FOOT_CLEARANCE_STD**2))
+    return np.sum(np.where(foot_contact, 0.0, reward), axis=-1)
 
 
 def double_flight_penalty(foot_contact: np.ndarray) -> np.ndarray:
@@ -211,6 +225,16 @@ def dof_vel_penalty(joint_vel: np.ndarray) -> np.ndarray:
     return np.sum(joint_vel**2, axis=-1)
 
 
+def energy_penalty(joint_torque: np.ndarray, joint_vel: np.ndarray) -> np.ndarray:
+    """Mechanical power drawn at the joints, sum |tau * omega| over all 29.
+
+    unitree_rl_lab 29dof only (`energy`, weight -2e-5); no unitree_rl_gym counterpart. Distinct
+    from torque_penalty (tau^2, which charges for holding a static load) -- this charges only for
+    torque applied while actually moving, which is what costs a real battery.
+    """
+    return np.sum(np.abs(joint_torque * joint_vel), axis=-1)
+
+
 def contact_no_vel_penalty(foot_lin_vel: np.ndarray, foot_contact: np.ndarray) -> np.ndarray:
     """Squared velocity of feet that are currently planted -- the anti-slip / anti-scuff term.
 
@@ -261,8 +285,8 @@ def compute_reward(
         "alive_bonus": np.full(commands.shape[0], scales.alive_bonus),
         # --- gait structure ---
         "contact": scales.contact * clocked_contact(state["foot_contact"], expected_stance),
-        "feet_swing_height": scales.feet_swing_height
-        * feet_swing_height(state["foot_pos"], state["foot_contact"]),
+        "feet_clearance": scales.feet_clearance
+        * foot_clearance(state["foot_pos"], state["foot_contact"]),
         "double_flight": scales.double_flight * double_flight_penalty(state["foot_contact"]),
         "zmp_margin": scales.zmp_margin * zmp_margin_violation(state),
         "contact_no_vel": scales.contact_no_vel
@@ -286,7 +310,21 @@ def compute_reward(
         # --- effort / smoothness ---
         "torque_penalty": scales.torque_penalty * torque_penalty(state["joint_torque"]),
         "action_rate_penalty": scales.action_rate_penalty * action_rate_penalty(actions, prev_actions),
+        "energy": scales.energy * energy_penalty(state["joint_torque"], state["joint_vel"]),
     }
+    # Every weight is a PER-SECOND rate and has to be multiplied by the control timestep, which is
+    # what both reference frameworks do and what this code was missing until v11:
+    #   legged_gym, LeggedRobot._prepare_reward_function:  self.reward_scales[key] *= self.dt
+    #     with self.dt = cfg.control.decimation * sim_params.dt = 4 * 0.005 = 0.02
+    #   IsaacLab, RewardManager.compute:                   value * term_cfg.weight * env.step_dt
+    # Without it every weight borrowed from those configs was 50x too large in absolute terms.
+    # Corroborated by the v10 run: Loss/value started at 100023, a pathological value scale.
+    #
+    # A uniform factor does not change which policy is optimal, so this is not by itself the fix
+    # for v10's suicide policy (only_positive_rewards is) -- but it puts the value function, the
+    # advantage magnitudes and the adaptive-LR / desired_kl machinery back in the range the
+    # reference hyperparameters were actually tuned for.
+    terms = {k: v * REWARD_DT for k, v in terms.items()}
     total = sum(terms.values())
     if only_positive_rewards:
         total = np.clip(total, 0.0, None)

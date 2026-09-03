@@ -51,13 +51,25 @@ class RewardScales:
     # nothing pinned down cadence (the v9/model_4750 over-long strides). Note the weight drop from
     # 0.5 to 0.18: it fires far more often (every step, not once per completed cycle), so the
     # per-step contribution is comparable despite the smaller scale.
-    contact: float = 0.18
-    # Swing-foot clearance. INVERTED from the old feet_clearance (+1.0 reward) into Unitree's
-    # penalty form: squared error between the swing foot's height and FOOT_CLEARANCE_TARGET, at
-    # their -20.0 weight. A reward can simply be forfeited by a policy that would rather stand
-    # still or drag its feet; a penalty cannot. This is the term aimed directly at model_4750's
-    # trailing-foot drag.
-    feet_swing_height: float = -20.0
+    #
+    # v11: 0.18 -> 0.5. 0.18 came from unitree_rl_gym, which is the 12-DoF G1 build. The direct
+    # reference for OUR robot is unitree_rl_lab's 29dof config, whose equivalent `gait` term
+    # (func=mdp.feet_gait, period 0.8, offset [0.0, 0.5], threshold 0.55 -- same clock we run)
+    # is weighted 0.5.
+    contact: float = 0.5
+    # Swing-foot clearance, as a POSITIVE reward at target 0.1 m.
+    #
+    # v11 revert. v10 inverted this into a -20.0 penalty (unitree_rl_gym's `feet_swing_height`),
+    # on the reasoning that a reward can be forfeited by a policy that would rather stand still.
+    # That was the wrong reference: unitree_rl_gym is the 12-DoF build. unitree_rl_lab's 29dof
+    # config -- our exact robot -- keeps this a positive reward:
+    #     feet_clearance = RewTerm(func=mdp.foot_clearance_reward, weight=1.0,
+    #                              params={"target_height": 0.1, ...})
+    # So: back to +1.0, with the target moved 0.08 -> 0.10 to match. The v10 penalty form is not
+    # vindicated by the run either -- feet_swing_height went -9.20 -> -0.08 while episodes were
+    # only 0.47 s long, i.e. it went quiet because there was no swing phase, not because the drag
+    # was fixed. See FOOT_CLEARANCE_TARGET in rewards.py for what the height is measured on.
+    feet_clearance: float = 1.0
     # Both feet simultaneously airborne. Project-specific (Unitree has no equivalent -- the clock
     # covers it for them). At stance duty 0.55 with a 0.5 phase offset the clock schedules ~10%
     # double support and 0% double flight, so under good clock tracking this term should read ~0;
@@ -71,7 +83,12 @@ class RewardScales:
     # edge", so it does not fight dynamic walking.
     zmp_margin: float = -0.2
     torque_penalty: float = -1.0e-5
-    action_rate_penalty: float = -0.01
+    # v11: -0.01 -> -0.05. -0.01 was unitree_rl_gym (12-DoF); unitree_rl_lab's 29dof config uses
+    # `action_rate = RewTerm(func=mdp.action_rate_l2, weight=-0.05)`.
+    action_rate_penalty: float = -0.05
+    # Mechanical power. unitree_rl_lab 29dof only: `energy = RewTerm(func=mdp.energy, weight=-2e-5)`.
+    # No unitree_rl_gym counterpart. Charged as sum |torque * joint_vel| over all 29 joints.
+    energy: float = -2.0e-5
 
     # --- joint regularization (all NEW in this change set) -----------------------------------
     # Hip roll/yaw pinned near default. Unitree's `hip_pos`, their stated purpose being to prevent
@@ -105,8 +122,16 @@ class RewardScales:
     #     the waist term ~4.7x. Arm swing is also legitimate biped balance behavior -- the goal is
     #     removing the *free* angular-momentum exploit, not freezing the arms into a mannequin.
     #     At -0.25 a typical 0.3 rad average deviation costs ~-0.32/step.
+    # v11: both now have a confirmed reference. unitree_rl_lab's 29dof config DOES carry
+    # upper-body deviation terms (the "no counterpart exists" note above was written from
+    # unitree_rl_gym's 12-DoF config only):
+    #     joint_deviation_waists = RewTerm(joint_deviation_l1, weight=-1,   joint_names=["waist.*"])
+    #     joint_deviation_arms   = RewTerm(joint_deviation_l1, weight=-0.1,
+    #                                      joint_names=[".*_shoulder_.*", ".*_elbow_joint", ".*_wrist_.*"])
+    # Waist -1.0 was already correct by coincidence. Arms move -0.25 -> -0.1 to match.
+    # Note their form is joint_deviation_l1 (absolute), ours is squared; see rewards.py.
     waist_deviation: float = -1.0
-    arm_deviation: float = -0.25
+    arm_deviation: float = -0.1
     # History: asymmetric_payload_run_v2 (5000 iters) plateaued at ~64/1000 step episodes (6.4%
     # of max) with alive_bonus=0.1 -- too small relative to the penalty terms to give PPO much
     # incentive to fight for extra survival time. Bumped to 5.0 for v3/v4/v5 based on a comparable
@@ -146,10 +171,20 @@ class RewardScales:
     # Stability terms below match Unitree's official G1 RL config (see rewards.py for the
     # per-term explanation of what each one physically means for the robot):
     # https://github.com/unitreerobotics/unitree_rl_gym/blob/main/legged_gym/envs/g1/g1_config.py
-    orientation: float = -1.0
+    # v11: -1.0 -> -5.0. -1.0 was unitree_rl_gym (12-DoF); unitree_rl_lab's 29dof config uses
+    # `flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-5.0)`. Same quantity
+    # (squared xy of projected gravity), 5x the weight. This is also the term most directly aimed
+    # at v10's failure: terminations were 100% orientation, i.e. forward pitch.
+    orientation: float = -5.0
     base_height: float = -10.0
     lin_vel_z: float = -2.0
     ang_vel_xy: float = -0.05
+    # NOTE on dof_acc / dof_vel / ang_vel_xy: I earlier proposed cutting these to 0.25x, derived
+    # from a local -35.3/step random-action measurement. That was NOT a referenced value and has
+    # been dropped. unitree_rl_lab's 29dof config applies joint_vel -0.001 and joint_acc -2.5e-7
+    # UNSCOPED, i.e. over all 29 joints of this exact robot -- so the "we have 29 joints, they have
+    # 12" argument for scaling them down was simply wrong. The real discrepancy was the missing
+    # control_dt factor; see REWARD_DT in rewards.py.
 
 
 @dataclass
@@ -198,20 +233,33 @@ class EnvCfg:
 
     # Clamp the summed per-step reward at >= 0 (legged_gym's `only_positive_rewards`).
     #
-    # DEFAULT OFF, and the measurement is why. Measured per-step reward balance on this exact
-    # config (300 steps, pushes/payload/init-noise disabled to isolate the scales):
-    #   holding the crouched default (stand still):  pos +1.38 / neg -0.35 -> NET +1.02
-    #   random actions (where PPO starts):           pos +1.00 / neg -36.3 -> NET -35.3, on 100%
-    #                                                of steps
-    # With the clamp ON, every step at initialization returns exactly 0.0 -- identical reward on
-    # every state, zero advantage variance, so PPO gets no gradient at all and cannot bootstrap out
-    # of the random regime. The clamp is the right guard against a suicide policy only when it binds
-    # occasionally (it binds on ~11% of stand-still steps, which is fine); at 100% it is strictly
-    # worse than no clamp.
+    # v11: NOW ON. This is the single most important fix in this change set, and v10 is what it
+    # costs to get it wrong.
     #
-    # Left in place because it becomes useful once the policy is out of the random regime, and
-    # because turning it on is the first thing to try if the negatives do produce a suicide policy.
-    only_positive_rewards: bool = False
+    # It is the legged_gym base default, verbatim from LeggedRobotCfg.rewards:
+    #     only_positive_rewards = True
+    #     # if true negative total rewards are clipped at zero
+    #     # (avoids early termination problems)
+    # Unitree's G1 `rewards` class overrides only soft_dof_pos_limit and base_height_target, so it
+    # INHERITS True. Every reference implementation of this task runs with the clamp on.
+    #
+    # It was set False for v10 on the following measurement (300 steps, disturbances off):
+    #   holding the crouched default (stand still):  pos +1.38 / neg -0.35 -> NET +1.02
+    #   random actions (where PPO starts):           pos +1.00 / neg -36.3 -> NET -35.3 on 100% of
+    #                                                steps, so the clamp returns exactly 0.0 on
+    #                                                every step at initialization
+    # and the inference that identical zero reward everywhere leaves PPO no advantage variance to
+    # bootstrap from. The measurement was right; the inference was wrong. v10 then produced exactly
+    # the failure the legged_gym comment warns about: corr(reward, episode_length) = -0.701, and a
+    # final policy that survived 23.7 steps versus 33.2 for an UNTRAINED network -- it learned that
+    # dying early was cheaper than living.
+    #
+    # Why the clamp works despite the all-zero start: with reward >= 0 always, a longer episode can
+    # never score worse than a shorter one, so early termination is never an improvement. The
+    # gradient does not have to come from the clamped random regime -- it appears as soon as any
+    # rollout stumbles into a state scoring above 0, and from there the ratchet only goes one way.
+    # Bootstrapping out of an all-zero region is a slow start; a suicide gradient is a wrong answer.
+    only_positive_rewards: bool = True
 
     command_lin_vel_range: tuple[float, float] = (-1.0, 1.0)
     command_ang_vel_range: tuple[float, float] = (-1.0, 1.0)
