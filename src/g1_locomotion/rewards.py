@@ -141,7 +141,9 @@ FOOT_CLEARANCE_TARGET = 0.08  # m, on the foot body origin (~0.045 m of true sol
 FOOT_CLEARANCE_STD = 0.05  # m, width of the exp kernel below
 
 
-def foot_clearance(foot_pos: np.ndarray, foot_contact: np.ndarray) -> np.ndarray:
+def foot_clearance(
+    foot_pos: np.ndarray, foot_contact: np.ndarray, expected_stance: np.ndarray | None = None
+) -> np.ndarray:
     """Reward a lifted (non-contact) foot for being near the target swing clearance.
 
     v11 restores this to its POSITIVE form. v10 had inverted it into a -20.0 `feet_swing_height`
@@ -156,12 +158,38 @@ def foot_clearance(foot_pos: np.ndarray, foot_contact: np.ndarray) -> np.ndarray
     while it is actually travelling. Ours gates on contact only, which asks a foot lifted in place
     to reach clearance too. Closest form without importing their velocity shaping.
 
-    Gated on *actual* contact, not the clock's expected swing: any airborne foot is expected near
-    clearance regardless of what the clock says it should be doing. Assumes flat ground (world
-    z=0); needs a ground-height offset if terrain is re-enabled.
+    JUMPING EXPLOIT (v12.1 fix). Gating on contact ALONE makes hopping strictly more profitable
+    than walking, which v12 duly discovered:
+
+        jump  (both feet airborne):  feet_clearance +2.0, double_flight -0.3  ->  net +1.7
+        stride (one foot swinging):  feet_clearance +1.0                      ->  net +1.0
+
+    Measured on v12_mjx: 13.2% of time fully airborne at 300 iterations (25.2% at 200 -- worse than
+    an untrained policy's 18.7%), against v9's 2.3%, with velocity tracking DEGRADED to 0.830 vs
+    v9's 0.657. It was earning clearance instead of travelling.
+
+    v9 did not do this because its air-time `contact_timing` only paid after a completed
+    swing-and-land cycle, so being airborne earned nothing on its own. Replacing that with the
+    clocked `contact` reward removed the anti-jump pressure without anyone noticing feet_clearance
+    was relying on it -- the clock itself is indifferent, since a two-foot jump matches "swing" for
+    one leg and mismatches "stance" for the other, scoring ~chance either way.
+
+    So clearance is now also gated on the clock: only the leg SCHEDULED to swing can earn it. This
+    is closer to IsaacLab's foot_clearance_reward, which weights by foot horizontal speed so a foot
+    lifted in place earns nothing either. Pass expected_stance=None to get the old contact-only
+    behaviour back.
+
+    Assumes flat ground (world z=0); needs a ground-height offset if terrain is re-enabled.
     """
     reward = np.exp(-((foot_pos[..., 2] - FOOT_CLEARANCE_TARGET) ** 2) / (2 * FOOT_CLEARANCE_STD**2))
-    return np.sum(np.where(foot_contact, 0.0, reward), axis=-1)
+    earning = ~foot_contact
+    if expected_stance is not None:
+        # Only the foot the CLOCK says should be swinging can earn clearance. See the "JUMPING
+        # EXPLOIT" note above: without this, both feet earn simultaneously and hopping outscores
+        # walking. With it, a two-foot jump collects at most +1.0 (the scheduled swing leg), the
+        # same as a proper stride, so the exploit pays nothing extra.
+        earning = earning & (~expected_stance)
+    return np.sum(np.where(earning, reward, 0.0), axis=-1)
 
 
 def double_flight_penalty(foot_contact: np.ndarray) -> np.ndarray:
@@ -308,7 +336,7 @@ def compute_reward(
         # --- gait structure ---
         "contact": scales.contact * clocked_contact(state["foot_contact"], expected_stance),
         "feet_clearance": scales.feet_clearance
-        * foot_clearance(state["foot_pos"], state["foot_contact"]),
+        * foot_clearance(state["foot_pos"], state["foot_contact"], expected_stance),
         "double_flight": scales.double_flight * double_flight_penalty(state["foot_contact"]),
         "zmp_margin": scales.zmp_margin * zmp_margin_violation(state),
         "contact_no_vel": scales.contact_no_vel
