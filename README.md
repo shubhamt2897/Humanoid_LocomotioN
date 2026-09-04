@@ -113,32 +113,40 @@ seconds, and each full minute is linked underneath.
 
 ### Training curves
 
-Every run to date, read together rather than separately (dashed = MJX backend):
+Every run to date, read together rather than separately (dashed = MJX backend). Interactive
+versions of every logged metric are on
+[Weights & Biases](https://wandb.ai/shubhamt2897-hochschule-schmalkalden/g1_robust_locomotion);
+these are committed as static images so they stay readable without a W&B login.
 
-<table>
-<tr>
-<td width="50%"><img src="media/results/episode_length_comparison.png"/></td>
-<td width="50%"><img src="media/results/tracking_quality_comparison.png"/></td>
-</tr>
-</table>
+**How long the robot stays up.** The dotted line is an untrained network -- anything below it is
+worse than no training at all.
+
+![Survival across every run](media/results/episode_length_comparison.png)
+
+**How well it follows the velocity command.** This is the metric that actually reflects walking,
+and it is where `v3`'s survival advantage evaporates.
+
+![Velocity-tracking quality](media/results/tracking_quality_comparison.png)
+
+**Whether the reward is pointing the right way.** Correlation between mean reward and episode
+length, per run -- one number that catches the `v10` failure instantly.
+
+![Reward alignment](media/results/reward_alignment.png)
 
 Four things these show:
 
 - **`v3` still "wins" on raw survival (121 steps) and always did** -- but that is a reward-shaping
   artifact, not walking. Its `alive_bonus=5.0` paid for survival regardless of tracking quality,
-  and its velocity tracking (left panel of the second chart) is the *worst* of every run that
+  and its velocity tracking (second chart) is the *worst* of every run that
   trained properly. Survival alone is not the metric.
 - **`v10` is the one line that goes down.** It crosses below the untrained-network floor (dotted,
-  39.5 steps) and stays there. The right-hand chart says why: `corr(reward, episode_length)`
+  39.5 steps) and stays there. The third chart says why: `corr(reward, episode_length)`
   = **-0.70**, the only negative bar. It was being paid to die.
 - **`v11` is flat at ~18 steps with tracking pinned near zero** -- the orange line along the
   bottom. Enabling `only_positive_rewards` without also rebalancing the scales clamped the total
   reward to exactly 0.0 on essentially every step, leaving PPO no gradient at all.
 - **`v12`/`v12.1` restore the correlation to +0.94/+0.98** and climb steadily. `v12.1` was still
   rising when the run ended -- it did not converge, it ran out of iterations.
-
-Live, explorable versions of every logged metric are on
-[Weights & Biases](https://wandb.ai/shubhamt2897-hochschule-schmalkalden/g1_robust_locomotion).
 
 ### Best checkpoints, measured
 
