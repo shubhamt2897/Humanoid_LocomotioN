@@ -48,11 +48,28 @@ full-collision MuJoCo model, against an untrained network as the floor:
 | airborne (no foot down) | **4.6 %** | 9.3 % | 28.2 % |
 | contact transitions / s | 17.61 | **12.04** | 21.47 |
 
-60-second continuous captures, `--auto_reset` on so falls respawn (not curated -- this is typical
-behaviour, including every fall):
+60-second continuous captures with `--auto_reset` on, so a fall respawns and the run continues.
+Not curated -- this is typical behaviour including every fall. The clips below loop the first 8
+seconds; the full 60 s `.mp4` is linked under each:
 
-- **MuJoCo best:** [media/v12_mujoco_best/model_1750_20260904_075253.mp4](media/v12_mujoco_best/model_1750_20260904_075253.mp4)
-- **MJX best:** [media/v121_mjx_best/model_1798_20260904_075904.mp4](media/v121_mjx_best/model_1798_20260904_075904.mp4)
+<table>
+<tr>
+<td align="center" width="50%"><b>MuJoCo -- <code>v12_v9base_clock/model_1750</code></b></td>
+<td align="center" width="50%"><b>MJX -- <code>v121_mjx_nojump/model_1798</code></b></td>
+</tr>
+<tr>
+<td align="center"><img src="media/v12_mujoco_best/preview.gif" width="320"/></td>
+<td align="center"><img src="media/v121_mjx_best/preview.gif" width="320"/></td>
+</tr>
+<tr>
+<td align="center">Best velocity tracking (0.700 m/s) and least airborne time (4.6%), but the
+fastest foot-chatter of the two.<br/>
+<a href="media/v12_mujoco_best/model_1750_20260904_075253.mp4">full 60 s .mp4</a></td>
+<td align="center">Longest single episode (3.52 s), most double support (40.9%) and the cadence
+closest to the gait clock.<br/>
+<a href="media/v121_mjx_best/model_1798_20260904_075904.mp4">full 60 s .mp4</a></td>
+</tr>
+</table>
 
 One caveat worth stating plainly: during training the MJX run logged 176.6 mean episode length
 against MuJoCo's 61.5, which looks like a 2.9x win. It is not a like-for-like number. MJX runs a
