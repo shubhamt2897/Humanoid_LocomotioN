@@ -30,52 +30,20 @@ on that clock to close a jumping exploit. Two things came out of it:
 - There is now a **real margin over an untrained network**: 60.7 vs 39.5 steps mean survival, and
   airborne time drops from 28.2% to 4.6%.
 
+The run history, in one line each -- the charts under [Results](#training-curves) plot all of it:
+
+| run | change | outcome |
+|---|---|---|
+| `v3` | `alive_bonus=5.0` | 121 steps, but survival-farming; worst velocity tracking |
+| `v6` | alive rebalanced to Unitree's 0.15 | better tracking in half the iterations |
+| `v7` | + foot-clearance reward | policy stood rigid, never stepped |
+| `v9` | `alive_bonus=0.5` | freeze fixed; long strides, dragging foot, pitches over |
+| `v10` | gait clock + full Unitree penalty set | **regression** -- suicide policy, below untrained |
+| `v11` | `only_positive_rewards` on | flat at 18 steps, reward clamped to 0.0 |
+| `v12` | v9 rewards + gait clock only | 61.5 steps, correlation restored to +0.94 |
+| `v12.1` | clock-gated clearance (MJX) | best run; still climbing when it ended |
+
 Full run-by-run diagnostic history: `PROGRESS.md` (local working log, gitignored).
-
-## Best checkpoints
-
-Two training backends were built: the original serial-MuJoCo one, and an MJX (GPU-batched) one.
-Best checkpoint from each, **both evaluated identically** -- 16 envs x 3000 steps (60 s) on the
-full-collision MuJoCo model, against an untrained network as the floor:
-
-| | **MuJoCo** `v12_v9base_clock/model_1750` | **MJX** `v121_mjx_nojump/model_1798` | untrained |
-|---|---|---|---|
-| episode length mean / median | **60.7** / 58.0 | 60.2 / 56.0 | 39.5 / 38.0 |
-| longest single episode | 138 (2.76 s) | **176 (3.52 s)** | 101 (2.02 s) |
-| mean torso tilt | 16.4 deg | 17.1 deg | 11.2 deg |
-| velocity tracking error | **0.700 m/s** | 0.801 m/s | 0.945 m/s |
-| both feet planted | 31.2 % | **40.9 %** | 37.0 % |
-| airborne (no foot down) | **4.6 %** | 9.3 % | 28.2 % |
-| contact transitions / s | 17.61 | **12.04** | 21.47 |
-
-60-second continuous captures with `--auto_reset` on, so a fall respawns and the run continues.
-Not curated -- this is typical behaviour including every fall. The clips below loop the first 8
-seconds; the full 60 s `.mp4` is linked under each:
-
-<table>
-<tr>
-<td align="center" width="50%"><b>MuJoCo -- <code>v12_v9base_clock/model_1750</code></b></td>
-<td align="center" width="50%"><b>MJX -- <code>v121_mjx_nojump/model_1798</code></b></td>
-</tr>
-<tr>
-<td align="center"><img src="media/v12_mujoco_best/preview.gif" width="320"/></td>
-<td align="center"><img src="media/v121_mjx_best/preview.gif" width="320"/></td>
-</tr>
-<tr>
-<td align="center">Best velocity tracking (0.700 m/s) and least airborne time (4.6%), but the
-fastest foot-chatter of the two.<br/>
-<a href="media/v12_mujoco_best/model_1750_20260904_075253.mp4">full 60 s .mp4</a></td>
-<td align="center">Longest single episode (3.52 s), most double support (40.9%) and the cadence
-closest to the gait clock.<br/>
-<a href="media/v121_mjx_best/model_1798_20260904_075904.mp4">full 60 s .mp4</a></td>
-</tr>
-</table>
-
-One caveat worth stating plainly: during training the MJX run logged 176.6 mean episode length
-against MuJoCo's 61.5, which looks like a 2.9x win. It is not a like-for-like number. MJX runs a
-reduced collision set (foot spheres only, no mesh self-collision), so episodes survive longer
-inside it for reasons that do not transfer. Re-evaluated on the same full-collision model, the two
-are **statistically tied**. Training-log episode lengths are only comparable within a backend.
 
 ## Method, in brief
 
@@ -120,15 +88,32 @@ rebalancing <code>alive_bonus</code> so survival stops dominating the reward (se
 <a href="src/README.md">src/README.md</a>). Still falls; doesn't yet attempt to lift a foot.<br/>
 <a href="media/progression/03_v6_2500iter_rebalanced.mp4">full-res .mp4</a></td>
 </tr>
+<tr><td colspan="2">&nbsp;</td></tr>
+<tr>
+<td align="center" width="50%"><b><code>v12</code> -- MuJoCo, v9 reward + gait clock</b></td>
+<td align="center" width="50%"><b><code>v12.1</code> -- MJX, clock-gated clearance</b></td>
+</tr>
+<tr>
+<td align="center"><img src="media/v12_mujoco_best/preview.gif" width="320"/></td>
+<td align="center"><img src="media/v121_mjx_best/preview.gif" width="320"/></td>
+</tr>
+<tr>
+<td align="center">Takes real alternating steps and stays upright noticeably longer, but the
+cadence is far too fast and it still topples. Best velocity tracking of any run (0.700 m/s).<br/>
+<a href="media/v12_mujoco_best/model_1750_20260904_075253.mp4">full 60 s .mp4</a></td>
+<td align="center">Best single episode of the project (3.52 s) and the cadence closest to the
+gait clock, with the most double support (40.9%).<br/>
+<a href="media/v121_mjx_best/model_1798_20260904_075904.mp4">full 60 s .mp4</a></td>
+</tr>
 </table>
+
+Unlike the 6-second clips above, the two `v12` clips are **60-second** captures with
+`--auto_reset` on, so every fall respawns and the run continues -- the GIFs loop the first 8
+seconds, and each full minute is linked underneath.
 
 ### Training curves
 
-Two metrics, three runs -- read together, not separately. `v3` "wins" on raw survival time, but
-that's mostly a reward-shaping artifact (a large `alive_bonus` rewarding survival regardless of
-tracking quality). `v6` and `v7` -- with that bonus rebalanced down to Unitree's own official
-value -- reach *better* velocity-tracking quality in under half the iterations, which is the
-metric that actually reflects walking ability:
+Every run to date, read together rather than separately (dashed = MJX backend):
 
 <table>
 <tr>
@@ -137,8 +122,47 @@ metric that actually reflects walking ability:
 </tr>
 </table>
 
-Live, explorable versions of every logged metric (not just these two) are on
+Four things these show:
+
+- **`v3` still "wins" on raw survival (121 steps) and always did** -- but that is a reward-shaping
+  artifact, not walking. Its `alive_bonus=5.0` paid for survival regardless of tracking quality,
+  and its velocity tracking (left panel of the second chart) is the *worst* of every run that
+  trained properly. Survival alone is not the metric.
+- **`v10` is the one line that goes down.** It crosses below the untrained-network floor (dotted,
+  39.5 steps) and stays there. The right-hand chart says why: `corr(reward, episode_length)`
+  = **-0.70**, the only negative bar. It was being paid to die.
+- **`v11` is flat at ~18 steps with tracking pinned near zero** -- the orange line along the
+  bottom. Enabling `only_positive_rewards` without also rebalancing the scales clamped the total
+  reward to exactly 0.0 on essentially every step, leaving PPO no gradient at all.
+- **`v12`/`v12.1` restore the correlation to +0.94/+0.98** and climb steadily. `v12.1` was still
+  rising when the run ended -- it did not converge, it ran out of iterations.
+
+Live, explorable versions of every logged metric are on
 [Weights & Biases](https://wandb.ai/shubhamt2897-hochschule-schmalkalden/g1_robust_locomotion).
+
+### Best checkpoints, measured
+
+Training-log curves are not directly comparable across backends: MJX runs a reduced collision set
+(foot spheres only, no mesh self-collision), so episodes survive longer inside it for reasons that
+do not transfer. `v12.1` logged 176.6 mean episode length against `v12`'s 61.5 -- a 2.9x gap that
+**disappears** under equal evaluation.
+
+So both were re-run identically: 16 envs x 3000 steps (60 s) on the full-collision MuJoCo model,
+with an untrained network as the floor.
+
+| | **MuJoCo** `v12_v9base_clock/model_1750` | **MJX** `v121_mjx_nojump/model_1798` | untrained |
+|---|---|---|---|
+| episode length mean / median | **60.7** / 58.0 | 60.2 / 56.0 | 39.5 / 38.0 |
+| longest single episode | 138 (2.76 s) | **176 (3.52 s)** | 101 (2.02 s) |
+| mean torso tilt | 16.4 deg | 17.1 deg | 11.2 deg |
+| velocity tracking error | **0.700 m/s** | 0.801 m/s | 0.945 m/s |
+| both feet planted | 31.2 % | **40.9 %** | 37.0 % |
+| airborne (no foot down) | **4.6 %** | 9.3 % | 28.2 % |
+| contact transitions / s | 17.61 | **12.04** | 21.47 |
+
+On equal footing the two are **statistically tied** at ~60 steps. Both clear the untrained
+baseline properly, and airborne time collapsing from 28.2% to 4.6-9.3% is the clearest sign the
+policies are genuinely controlling the body rather than flailing.
 
 ### Where it still falls short
 
